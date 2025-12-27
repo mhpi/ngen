@@ -19,7 +19,7 @@ There are two steps to getting upstream submodule changes fully
   1. fetching and locally checking out the changes from the remote
   2. committing the new checkout revision for the submodule
 
-To fetch and check out the latest revision (for the [currently used branch](#viewing-the-current-branch)):
+To fetch and checkout the latest revision (for the [currently used branch](#viewing-the-current-branch)):
 
     git submodule add git@github.com:leoglonz/dhbv2_mts.git extern/dhbv2/dhbv2
     git submodule update --init --recursive
