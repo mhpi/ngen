@@ -3,21 +3,25 @@ ARG NPROC=4
 ARG NGEN_REPO=https://github.com/mhpi/ngen.git
 ARG NGEN_BRANCH=dev
 
+
 # Stage 1: Get ngen source and initialize submodules
 FROM rockylinux:8 AS source
 ARG NPROC
 ARG NGEN_REPO
 ARG NGEN_BRANCH
 
-RUN yum install -y git && \
-git clone --recursive -b ${NGEN_BRANCH} ${NGEN_REPO} /src
+RUN yum install -y git \
+    # ngen
+    && git clone --recursive -b ${NGEN_BRANCH} ${NGEN_REPO} /ngen_src \
+    # dmod for multiprocessing
+    && git clone https://github.com/NOAA-OWP/DMOD.git /dmod_src
 
 # Clone and init all submodules
-WORKDIR /src
+WORKDIR /ngen_src
 RUN git submodule update --init --recursive --jobs ${NPROC} --depth 1
 
 # NOTE: Patching test to fix swapped x/y values
-RUN sed -i 's/"v,y,x\\n1.000000,1,1\\n2.000000,1,2\\n2.000000,2,1\\n4.000000,2,2\\n"/"v,x,y\\n1.000000,1,1\\n2.000000,2,1\\n2.000000,1,2\\n4.000000,2,2\\n"/g' /src/test/utils/mdframe_csv_Test.cpp
+RUN sed -i 's/"v,y,x\\n1.000000,1,1\\n2.000000,1,2\\n2.000000,2,1\\n4.000000,2,2\\n"/"v,x,y\\n1.000000,1,1\\n2.000000,2,1\\n2.000000,1,2\\n4.000000,2,2\\n"/g' /ngen_src/test/utils/mdframe_csv_Test.cpp
 
 
 # Stage 2: Get dependencies
@@ -67,7 +71,8 @@ RUN yum install -y findutils git
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvbin/uv
 ENV PATH="/uvbin:${PATH}"
 
-COPY --from=source /src /src
+COPY --from=source /ngen_src /ngen_src
+COPY --from=source /dmod_src /dmod_src
 
 # Create python virtual environment
 RUN uv venv /opt/venv
@@ -78,15 +83,15 @@ ENV PATH="/opt/venv/bin:${PATH}"
 RUN uv pip install "numpy<2.0.0" pandas scipy bmipy
 
 # Install submodule requirements (e.g., sloth, dhbv2)
-RUN uv venv /opt/venv \
-    && . /opt/venv/bin/activate \
-    # # Install missing Forcings Engine # TODO: MISSING FROM NGEN
-    # && uv pip install "https://github.com/esmf-org/esmf/archive/refs/tags/v8.4.2.tar.gz" \
-    # && uv pip install "git+https://github.com/NOAA-OWP/ngen-forcing.git@master" \
-    # Install submodules
-    && find /src/extern -maxdepth 2 -mindepth 2 -type d \
-        -exec uv pip install {} --python-version 3.9 \;
+RUN find /ngen_src/extern -maxdepth 2 -mindepth 2 -type d \
+    -exec uv pip install {} --python-version 3.9 \;
 
+# Install dmod
+WORKDIR /dmod_src
+RUN uv pip install -r requirements.txt \
+    && ./scripts/update_package.sh python/lib/communication \
+    && ./scripts/update_package.sh python/lib/modeldata \
+    && ./scripts/update_package.sh python/services/subsetservice
 
 # Stage 4: Build ngen
 FROM dependencies AS build
@@ -98,7 +103,7 @@ ENV Python3_ROOT_DIR="/opt/venv"
 
 SHELL ["/usr/bin/scl", "enable", "gcc-toolset-11", "--", "/bin/bash", "-c"]
 
-COPY --from=source /src /ngen
+COPY --from=source /ngen_src /ngen
 WORKDIR /ngen
 
 RUN cmake \
@@ -106,19 +111,30 @@ RUN cmake \
     -B build \
     -DCMAKE_CXX_COMPILER=g++ \
     -DCMAKE_C_COMPILER=gcc \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    \
+    -DNetCDF_ROOT=/usr \
     -DBOOST_ROOT=/boost_1_86_0 \
     -DBoost_NO_BOOST_CMAKE:BOOL=TRUE \
     -DBoost_NO_SYSTEM_PATHS=ON \
-    -DNGEN_WITH_MPI:BOOL=OFF \
+    \
+    -DNGEN_IS_MAIN_PROJECT=ON \
     -DNGEN_WITH_NETCDF:BOOL=ON \
     -DNGEN_WITH_SQLITE:BOOL=ON \
     -DNGEN_WITH_UDUNITS:BOOL=ON \
+    -DNGEN_WITH_MPI:BOOL=OFF \
     -DNGEN_WITH_BMI_FORTRAN:BOOL=ON \
     -DNGEN_WITH_BMI_C:BOOL=ON \
     -DNGEN_WITH_PYTHON:BOOL=ON \
+    -DNGEN_WITH_ROUTING:BOOL=ON \
     -DNGEN_WITH_TESTS:BOOL=ON \
     -DNGEN_QUIET:BOOL=OFF \
-    -DNGEN_WITH_EXTERN_SLOTH:BOOL=ON
+    \
+    -DNGEN_WITH_EXTERN_SLOTH:BOOL=ON \
+    -DNGEN_WITH_EXTERN_TOPMODEL:BOOL=ON \
+    -DNGEN_WITH_EXTERN_CFE:BOOL=ON \
+    -DNGEN_WITH_EXTERN_PET:BOOL=ON \
+    -DNGEN_WITH_EXTERN_NOAH_OWP_MODULAR:BOOL=ON
 
 RUN cmake \
     --build build \
@@ -165,6 +181,7 @@ ENV LD_LIBRARY_PATH="/app/extern:/opt/rh/gcc-toolset-11/root/usr/lib64"
 # Set up python environment
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
 # Pathing for C++ interpreter
 ENV PYTHONHOME="/usr"
 ENV PYTHONPATH="/app/extern:/opt/venv/lib/python3.9/site-packages:/opt/venv/lib64/python3.9/site-packages"
