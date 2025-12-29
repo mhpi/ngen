@@ -1,7 +1,5 @@
 #include <fstream>
 
-#include <algorithm>
-
 #include "mdframe/mdframe.hpp"
 
 #include <boost/core/span.hpp>
@@ -49,73 +47,61 @@ void mdframe::to_csv(const std::string& path, bool header) const
     std::string header_line = "";
 
     std::vector<variable> variable_subset;
+    // will be at most # of vars
     variable_subset.reserve(this->m_variables.size());
 
-    // 1. Collect variables
+    // Get subset of variables that span over the given basis
     size_type max_rank = 0;
     for (const auto& pair : this->m_variables) {
+        const auto& dims = pair.second.dimensions();
         variable_subset.push_back(pair.second);
+
         size_type rank = pair.second.rank();
         if (rank > max_rank)
             max_rank = rank;
+        
+        if (header)
+            header_line += pair.first + ",";
     }
 
     if (variable_subset.empty()) {
         throw std::runtime_error("cannot output CSV with no output variables");
     }
 
-    // 2. Sort variables alphabetically by name for deterministic column order
-    std::sort(variable_subset.begin(), variable_subset.end(), 
-        [](const variable& a, const variable& b) {
-            return a.name() < b.name();
-        }
-    );
-
-    // 3. Generate Header
-    for (const auto& var : variable_subset) {
-        if (header)
-            header_line += var.name() + ",";
-    }
-
-    // 4. Collect and Sort Dimensions alphabetically for deterministic row order
-    std::vector<dimension> sorted_dimensions(this->m_dimensions.begin(), this->m_dimensions.end());
-    std::sort(sorted_dimensions.begin(), sorted_dimensions.end(),
-        [](const dimension& a, const dimension& b) {
-            return a.name() < b.name();
-        }
-    );
-
-    // 5. Calculate rows and shape based on sorted dimensions
+    // Calculate total number of rows across all subdimensions (not including header)
     size_type rows = 1;
     std::vector<size_type> shape;
-    shape.reserve(sorted_dimensions.size());
-    for (const auto& dim : sorted_dimensions) {
-        rows *= dim.size(); // Note: Original code used += which might be wrong for cartesian product size, usually it is *=.
-                            // However, strictly following previous logic: rows is used for reserve.
-                            // The shape logic is what matters for cartesian_indices.
+    shape.reserve(this->m_dimensions.size());
+    for (const auto& dim : this->m_dimensions) {
+        rows += dim.size();
         shape.push_back(dim.size());
     }
-    // Correction: `cartesian_indices` generates product of sizes. If rows was for reserve, *= is closer to count.
-    // Original code: rows += dim.size(); (This seems like an under-reservation but doesn't affect logic).
 
     if (header && header_line != "") {
         header_line.pop_back();
         output << header_line << std::endl;
     }
 
-    // 6. Create index map using sorted dimensions
+    // Create an index between the variable's dimensions, and the dimensions
+    // of the mdframe, such that when a variable needs to be passed an index,
+    // the dimensions will be ordered correctly.
+    //
+    // i.e. { value(x, t, y) : {2, 1, 3} }
     std::unordered_map<std::string, std::vector<size_type>> vd_index;
     for (const auto& var : variable_subset) {
         vd_index[var.name()] = std::vector<size_type>{};
         std::vector<size_type>& variable_index = vd_index[var.name()];
 
         variable_index.reserve(var.rank());
-        for (const auto& dim_name : var.dimensions()) {
-            // Find the index of this dimension within our SORTED dimensions vector
-            auto it = std::find_if(sorted_dimensions.begin(), sorted_dimensions.end(),
-                [&dim_name](const dimension& d) { return d.name() == dim_name; });
-            
-            variable_index.push_back(std::distance(sorted_dimensions.begin(), it));
+        for (const auto& dim : var.dimensions()) {
+            variable_index.push_back(
+                // Push back the index within the mdframe's store
+                // for this dimension that var spans over
+                std::distance(
+                    this->m_dimensions.begin(),
+                    this->m_dimensions.find(dim)
+                )
+            );
         }
     }
 
