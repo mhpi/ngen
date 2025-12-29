@@ -11,10 +11,12 @@ ARG NGEN_REPO
 ARG NGEN_BRANCH
 
 RUN yum install -y git \
-    # ngen
+    # 1. ngen
     && git clone --recursive -b ${NGEN_BRANCH} ${NGEN_REPO} /ngen_src \
-    # dmod for multiprocessing
-    && git clone https://github.com/NOAA-OWP/DMOD.git /dmod_src
+    # 2. dmod for multiprocessing
+    && git clone -b master https://github.com/NOAA-OWP/DMOD.git /dmod_src \
+    # 3. t-route for routing
+    && git clone --recursive -b master http://github.com/NOAA-OWP/T-Route.git /troute_src
 
 # Clone and init all submodules
 WORKDIR /ngen_src
@@ -36,6 +38,7 @@ RUN yum update -y \
         gcc-toolset-11-gcc-c++ \
         gcc-toolset-11-binutils \
         gcc-toolset-11-make \
+        gcc-toolset-11-gcc-gfortran \
     && yum install -y \
         tar \
         git \
@@ -50,6 +53,7 @@ RUN yum update -y \
         sqlite-devel \
         netcdf-devel \
         netcdf-cxx4-devel \
+        netcdf-fortran-devel \
     && yum clean all \
     && rm -rf /var/cache/yum
 
@@ -73,6 +77,8 @@ ENV PATH="/uvbin:${PATH}"
 
 COPY --from=source /ngen_src /ngen_src
 COPY --from=source /dmod_src /dmod_src
+# t-route installs editable dependencies, so any relocations will break pathing.
+COPY --from=source /troute_src /app/troute
 
 # Create python virtual environment
 RUN uv venv /opt/venv
@@ -92,6 +98,15 @@ RUN uv pip install -r requirements.txt \
     && ./scripts/update_package.sh python/lib/communication \
     && ./scripts/update_package.sh python/lib/modeldata \
     && ./scripts/update_package.sh python/services/subsetservice
+
+# Install t-route
+RUN uv pip install \
+    xarray netcdf4 joblib toolz Cython pyyaml geopandas pyarrow deprecated wheel
+WORKDIR /app/troute
+RUN uv pip install -r requirements.txt
+RUN export NETCDF="/usr/lib64/gfortran/modules" \
+    && scl enable gcc-toolset-11 -- ./compiler.sh
+
 
 # Stage 4: Build ngen
 FROM dependencies AS build
@@ -157,17 +172,20 @@ RUN yum update -y \
         sqlite \
         netcdf \
         netcdf-cxx4 \
+        netcdf-fortran \
+        libgfortran \
         libaec \
         findutils \
     && yum clean all
 
 WORKDIR /app
 COPY --from=python-build /opt/venv /opt/venv
+COPY --from=python-build /app/troute ./troute
 COPY --from=build /ngen/build/ngen .
 COPY --from=build /ngen/build/extern ./extern
 COPY --from=build /ngen/data /app/data
 COPY --from=build /ngen/build/test ./test
-COPY --from=build /ngen/test/data /app/test/data
+COPY --from=build /ngen/test/data ./test/data
 
 # Make sure test-specific libs are indexed
 RUN find /app/extern -name "*.so" -exec dirname {} + | sort -u > /etc/ld.so.conf.d/ngen.conf && \
@@ -175,7 +193,7 @@ RUN find /app/extern -name "*.so" -exec dirname {} + | sort -u > /etc/ld.so.conf
 RUN find /app/test -name "*.so" -printf '%h\n' | sort -u >> /etc/ld.so.conf.d/ngen.conf && \
     ldconfig
 
-ENV LD_LIBRARY_PATH="/app/extern:/opt/rh/gcc-toolset-11/root/usr/lib64"
+ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:/app/extern:/opt/rh/gcc-toolset-11/root/usr/lib64"
 # ENV UDUNITS2_XML_PATH="/usr/share/udunits2/udunits2.xml"
 
 # Set up python environment
@@ -184,7 +202,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Pathing for C++ interpreter
 ENV PYTHONHOME="/usr"
-ENV PYTHONPATH="/app/extern:/opt/venv/lib/python3.9/site-packages:/opt/venv/lib64/python3.9/site-packages"
+ENV PYTHONPATH="/app/troute/src/troute-network:/app/troute/src/troute-routing:/app/extern:/opt/venv/lib/python3.9/site-packages:/opt/venv/lib64/python3.9/site-packages"
 
 RUN ln -s /opt/venv /app/venv
 
