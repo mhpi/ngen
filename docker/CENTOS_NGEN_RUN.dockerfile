@@ -1,4 +1,4 @@
-FROM rockylinux:8 as builder
+FROM rockylinux:8 AS builder
 
 RUN yum update -y \
     && yum install -y dnf-plugins-core \
@@ -38,4 +38,4 @@ RUN cmake --build . --target ngen
 
 WORKDIR /ngen/
 
-CMD ./ngen data/catchment_data.geojson "" data/nexus_data.geojson "" data/example_realization_config.json
+CMD ["./ngen", "data/catchment_data.geojson", "", "data/nexus_data.geojson", "", "data/example_realization_config.json"]
