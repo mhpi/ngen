@@ -143,7 +143,8 @@ RUN cmake \
     -DNGEN_WITH_PYTHON:BOOL=ON \
     -DNGEN_WITH_ROUTING:BOOL=ON \
     -DNGEN_WITH_TESTS:BOOL=ON \
-    -DNGEN_QUIET:BOOL=OFF \
+    -DNGEN_QUIET:BOOL=ON \
+    -DUDUNITS_QUIET:BOOL=ON \   
     \
     -DNGEN_WITH_EXTERN_SLOTH:BOOL=ON \
     -DNGEN_WITH_EXTERN_TOPMODEL:BOOL=ON \
@@ -194,7 +195,7 @@ RUN find /app/test -name "*.so" -printf '%h\n' | sort -u >> /etc/ld.so.conf.d/ng
     ldconfig
 
 ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:/app/extern:/opt/rh/gcc-toolset-11/root/usr/lib64"
-# ENV UDUNITS2_XML_PATH="/usr/share/udunits2/udunits2.xml"
+ENV UDUNITS2_XML_PATH="/usr/share/udunits/udunits2.xml"
 
 # Set up python environment
 ENV VIRTUAL_ENV=/opt/venv
