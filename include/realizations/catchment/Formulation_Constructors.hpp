@@ -22,18 +22,18 @@
 namespace realization {
     using constructor = std::shared_ptr<Catchment_Formulation> (*)(std::string, std::shared_ptr<data_access::GenericDataProvider>, utils::StreamHandler);
 
-    extern std::map<std::string, constructor> formulations;
+    extern std::map<std::string, constructor> formulation_constructors;
 
     static std::string valid_formulation_keys(){
         std::string keys = "";
-        for(const auto& kv : formulations){
+        for(const auto& kv : formulation_constructors){
             keys.append(kv.first+" ");
         }
         return keys;
     }
 
     static bool formulation_exists(std::string formulation_type) {
-        return formulations.count(formulation_type) > 0;
+        return formulation_constructors.count(formulation_type) > 0;
     }
 
     static std::shared_ptr<Catchment_Formulation> construct_formulation(
@@ -42,14 +42,23 @@ namespace realization {
         forcing_params &forcing_config,
         utils::StreamHandler output_stream
     ) {
-        constructor formulation_constructor = formulations.at(formulation_type);
+        constructor formulation_constructor = formulation_constructors.at(formulation_type);
+
         std::shared_ptr<data_access::GenericDataProvider> fp;
         if (forcing_config.provider == "CsvPerFeature" || forcing_config.provider == ""){
             fp = std::make_shared<CsvPerFeatureForcingProvider>(forcing_config);
         }
 #if NGEN_WITH_NETCDF
         else if (forcing_config.provider == "NetCDF"){
-            fp = data_access::NetCDFPerFeatureDataProvider::get_shared_provider(forcing_config.path, forcing_config.simulation_start_t, forcing_config.simulation_end_t, output_stream);
+            // Note: The stream mechanics of the formulations and formulation manager are
+            // are strictly speaking indepdent of the log output stream here.  The "default" output
+            // stream likely coming into this function is the null stream, but we don't want to force the forcing provider 
+            // to also use the null stream for any logging it may do, 
+            // so we use the standard output stream for the forcing provider by default.
+            // TODO: this likely needs to be rethought and refactored, but for now, 
+            // this allows the NetCDF provider to log to standard output while still allowing
+            // formulations to log to their own output streams as needed.
+            fp = data_access::NetCDFPerFeatureDataProvider::get_shared_provider(forcing_config.path, forcing_config.simulation_start_t, forcing_config.simulation_end_t, utils::getStdOut());
         }
 #endif
         else if (forcing_config.provider == "NullForcingProvider"){

@@ -30,9 +30,6 @@ namespace realization {
 
     class Formulation_Manager {
         public:
-
-            std::shared_ptr<Simulation_Time> Simulation_Time_Object;
-
             Formulation_Manager(std::stringstream &data) {
                 boost::property_tree::ptree loaded_tree;
                 boost::property_tree::json_parser::read_json(data, loaded_tree);
@@ -51,32 +48,34 @@ namespace realization {
 
             ~Formulation_Manager() = default;
 
-            void read(geojson::GeoJSON fabric, utils::StreamHandler output_stream) {
+            void read(simulation_time_params &simulation_time_config,
+                      geojson::GeoJSON fabric, utils::StreamHandler output_stream) {
                 //TODO seperate the parsing of configuration options like time
                 //and routing and other non feature specific tasks from this main function
                 //which has to iterate the entire hydrofabric.
+
+                // TODO: (later) consider whether this really belongs inside the global formulation
+                auto per_formulation_setting = tree.get_child_optional("per_formulation_nexus_files");
+                if (per_formulation_setting) {
+                    #if !NGEN_WITH_NETCDF
+                    throw std::runtime_error("ERROR: per_formulation_nexus_files is set to true, but NGEN was built without NetCDF support.");
+                    #else
+                    use_per_formulation_nexus_files = per_formulation_setting->get_value<bool>();
+                    #endif
+                }
+                else {
+                    use_per_formulation_nexus_files = false;
+                }
+
                 auto possible_global_config = tree.get_child_optional("global");
 
                 if (possible_global_config) {
                     global_config = realization::config::Config(*possible_global_config);
                 }
 
-                auto possible_simulation_time = tree.get_child_optional("time");
-
-                if (!possible_simulation_time) {
-                    throw std::runtime_error("ERROR: No simulation time period defined.");
-                }
-                config::Time time = config::Time(*possible_simulation_time);
-                auto simulation_time_config = time.make_params();
-                /**
-                 * Call constructor to construct a Simulation_Time object
-                 */ 
-                this->Simulation_Time_Object = std::make_shared<Simulation_Time>(simulation_time_config);
-
                 /**
                  * Read the layer descriptions
                 */
-
                 // try to get the json node
                 auto layers_json_array = tree.get_child_optional("layers");
                 //Create the default surface layer
@@ -96,10 +95,7 @@ namespace realization {
 
                         // add the layer to storage
                         layer_storage.put_layer(layer_desc, layer_desc.id);
-                        if(layer.has_formulation() && layer.get_domain()=="catchments"){
-                            double c_value = UnitsHelper::get_converted_value(layer_desc.time_step_units,layer_desc.time_step,"s");
-                            // make a new simulation time object with a different output interval
-                            Simulation_Time sim_time(*Simulation_Time_Object, c_value);
+                        if (layer.has_formulation() && layer.get_domain() == "catchments") {
                             domain_formulations.emplace(
                                 layer_desc.id,
                                 construct_formulation_from_config(simulation_time_config,
@@ -137,8 +133,16 @@ namespace realization {
 
                 /**
                  * Read catchment configurations from configuration file
-                 */      
+                 */
                 auto possible_catchment_configs = tree.get_child_optional("catchments");
+
+                // For now at least, this isn't allowed
+                if (possible_catchment_configs && use_per_formulation_nexus_files) {
+                    std::string msg = "ERROR: Individual catchment formulation configs are not allowed when using "
+                                      "per-formulation nexus files.";
+                    std::cerr << msg;
+                    throw std::runtime_error(msg);
+                }
 
                 if (possible_catchment_configs) {
                     for (std::pair<std::string, boost::property_tree::ptree> catchment_config : *possible_catchment_configs) {
@@ -217,6 +221,10 @@ namespace realization {
              */
             bool is_empty() {
                 return this->formulations.empty();
+            }
+
+            bool is_using_per_formulation_nexus_files() const {
+                return use_per_formulation_nexus_files;
             }
 
             typename std::map<std::string, std::shared_ptr<Catchment_Formulation>>::const_iterator begin() const {
@@ -311,13 +319,36 @@ namespace realization {
                         int result = mkdir(dir, 0755);      
                         if (result == 0)
                             return str;
-                        else
-                            throw std::runtime_error("failed to create directory '" + str + "': " + std::strerror(errno));
+                        // Another process/MPI rank may have created the directory between this rank's stat and
+                        // mkdir calls, so consider EEXIST as success as long as the path is a directory.
+                        if (errno == EEXIST && stat(dir, &sb) == 0 && S_ISDIR(sb.st_mode))
+                            return str;
+                        throw std::runtime_error("failed to create directory '" + str + "': " + std::strerror(errno));
                     }
                 }
  
                 //for case where there is no output_root in the realization file
                 return "./";
+
+            }
+
+             /**
+             * Check if the formulation has catchment output writing disabled.
+             *
+             * @code{.cpp}
+             * // Example config:
+             * // ...
+             * // "disable_catchment_output": true
+             * // ...
+             * const auto manager = Formulation_Manger(CONFIG);
+             * manager.is_disable_catchment_output();
+             * //> true
+             * @endcode
+             * 
+             * @return bool
+             */
+            bool is_disable_catchment_output() const {
+                return tree.get_optional<bool>("disable_catchment_output").get_value_or(false);
             }
 
             /**
@@ -331,7 +362,7 @@ namespace realization {
             std::shared_ptr<Catchment_Formulation> construct_formulation_from_config(
                 simulation_time_params &simulation_time_config,
                 std::string identifier,
-                const realization::config::Config& catchment_formulation,
+                realization::config::Config& catchment_formulation,
                 utils::StreamHandler output_stream
             ) {
                 if(!formulation_exists(catchment_formulation.formulation.type)){
@@ -367,6 +398,10 @@ namespace realization {
                 std::shared_ptr<Catchment_Formulation> constructed_formulation = construct_formulation(catchment_formulation.formulation.type, identifier, forcing_config, output_stream);
                 //, geometry);
 
+                Catchment_Formulation::config_pattern_substitution(catchment_formulation.formulation.parameters,
+                                                                   BMI_REALIZATION_CFG_PARAM_REQ__INIT_CONFIG, "{{id}}",
+                                                                   identifier);
+
                 constructed_formulation->create_formulation(catchment_formulation.formulation.parameters);
                 return constructed_formulation;
             }
@@ -387,7 +422,7 @@ namespace realization {
                 // geojson::JSONProperty::print_property(global_config.formulation.parameters.at("modules"));
 
                 //Make a copy of the global configuration so parameters don't clash when linking to external data
-                auto formulation =  realization::config::Formulation(global_config.formulation);
+                auto formulation =  realization::config::Formulation(global_copy.formulation);
                 formulation.link_external(feature);
                 missing_formulation->create_formulation(formulation.parameters);
 
@@ -671,7 +706,10 @@ namespace realization {
 
             bool using_routing = false;
 
+            bool use_per_formulation_nexus_files;
+
             ngen::LayerDataStorage layer_storage;
+
     };
 }
 #endif // NGEN_FORMULATION_MANAGER_H

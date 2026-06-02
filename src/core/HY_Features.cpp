@@ -1,5 +1,6 @@
 #include <HY_Features.hpp>
 #include <HY_PointHydroNexus.hpp>
+#include <Formulation_Manager.hpp>
 
 using namespace hy_features;
 
@@ -17,7 +18,7 @@ HY_Features::HY_Features( geojson::GeoJSON catchments, std::string* link_key, st
 }
 
 HY_Features::HY_Features(network::Network network, std::shared_ptr<Formulation_Manager> formulations, geojson::GeoJSON fabric)
-  :network(network), formulations(formulations)
+  :network(network)
 {
       std::string feat_id;
       std::string feat_type;
@@ -25,14 +26,18 @@ HY_Features::HY_Features(network::Network network, std::shared_ptr<Formulation_M
 
       for(const auto& feat_idx : network){
         feat_id = network.get_id(feat_idx);//feature->get_id();
-        feat_type = feat_id.substr(0, feat_id.find(hy_features::identifiers::seperator) );
+        feat_type = feat_id.substr(0, feat_id.find(hy_features::identifiers::separator) );
 
         destinations  = network.get_destination_ids(feat_id);
         if(hy_features::identifiers::isCatchment(feat_type))
         {
           //Find and prepare formulation
           auto formulation = formulations->get_formulation(feat_id);
-          formulation->set_output_stream(formulations->get_output_root() + feat_id + ".csv");
+
+          if (!formulations->is_disable_catchment_output()) {
+            formulation->set_output_stream(formulations->get_output_root() + feat_id + ".csv");
+          }
+
           // TODO: add command line or config option to have this be omitted
           //FIXME why isn't default param working here??? get_output_header_line() fails.
           formulation->write_output("Time Step,""Time,"+formulation->get_output_header_line(",")+"\n");
@@ -69,3 +74,5 @@ HY_Features::HY_Features(network::Network network, std::shared_ptr<Formulation_M
       }
 
 }
+
+HY_Features::~HY_Features() = default;

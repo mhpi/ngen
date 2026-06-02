@@ -2,20 +2,21 @@
 
 ## Summary
 
-| Dependency | Management | Version | Notes |
-| ------------- |:------------- | :-----:| :-------: |
-| [Google Test](#google-test) | submodule  | `release-1.10.0` | |
-| [C/C++ Compiler](#c-and-c-compiler) | external | see below |  |
-| [CMake](#cmake) | external | \>= `3.17` | |
-| [Boost (Headers Only)](#boost-headers-only) | external | `1.86.0` | headers only library |
-| [Udunits libraries](https://www.unidata.ucar.edu/software/udunits) | external | >= 2.0 | Can be installed via package manager or from source |
-| [MPI](https://www.mpi-forum.org) | external | No current implementation or version requirements | Required for [multi-process distributed execution](DISTRIBUTED_PROCESSING.md) |
-| [Python 3 Libraries](#python-3-libraries) | external | \>= `3.8.0` | Can be [excluded](#overriding-python-dependency). |
-| [pybind11](#pybind11) | submodule | `v2.6.0` | Can be [excluded](#overriding-pybind11-dependency). |
-| [dmod.subsetservice](#the-dmodsubsetservice-package) | external | `>= 0.3.0` | Only required to perform integrated [hydrofabric file subdividing](DISTRIBUTED_PROCESSING.md#subdivided-hydrofabric) for distributed processing . |
-| [t-route](#t-route) | submodule | see below | Module required to enable channel-routing.  Requires pybind11 to enable |
-| [NetCDF Libraries](#netcdf-libraries) | external | \>= `4.7.4` | Enables NetCDF I/O support |
-| [SQLite3](https://www.sqlite.org/cintro.html) | external | \> `3.7.17` | Enables GeoPackage reading support |
+| Dependency                                                                                 | Management |                      Version                      |                                                                                 Notes                                                                                 |
+|--------------------------------------------------------------------------------------------|:-----------|:-------------------------------------------------:|:---------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
+| [Google Test](#google-test)                                                                | submodule  |                 `release-1.10.0`                  |                                                                                                                                                                       |
+| [C/C++ Compiler](#c-and-c-compiler)                                                        | external   |                     see below                     |                                                                                                                                                                       |
+| [CMake](#cmake)                                                                            | external   |                    \>= `3.17`                     |                                                                                                                                                                       |
+| [Boost (Headers Only)](#boost-headers-only)                                                | external   |                     `1.86.0`                      |                                                                         headers only library                                                                          |
+| [Udunits libraries](https://www.unidata.ucar.edu/software/udunits)                         | external   |                      >= 2.0                       |                                                          Can be installed via package manager or from source                                                          |
+| [MPI](https://www.mpi-forum.org)                                                           | external   | No current implementation or version requirements |                                             Required for [multi-process distributed execution](DISTRIBUTED_PROCESSING.md)                                             |
+| [Python 3 Libraries](#python-3-libraries)                                                  | external   |                    \>= `3.8.0`                    |                                                           Can be [excluded](#overriding-python-dependency).                                                           |
+| [pybind11](#pybind11)                                                                      | submodule  |                     `v2.6.0`                      |                                                          Can be [excluded](#overriding-pybind11-dependency).                                                          |
+| [dmod.subsetservice](#the-dmodsubsetservice-package)                                       | external   |                    `>= 0.3.0`                     |           Only required to perform integrated [hydrofabric file subdividing](DISTRIBUTED_PROCESSING.md#subdivided-hydrofabric) for distributed processing .           |
+| [t-route](#t-route)                                                                        | submodule  |                     see below                     |                                                Module required to enable channel-routing.  Requires pybind11 to enable                                                |
+| [NetCDF Libraries](#netcdf-libraries)                                                      | external   |                    \>= `4.7.4`                    |                                                                      Enables NetCDF I/O support                                                                       |
+| [NetCDF-4 parallel support](https://docs.unidata.ucar.edu/netcdf-c/4.9.3/parallel_io.html) | external   |                                                   |   Optional; opt in via `-DNGEN_WITH_PARALLEL_NETCDF=ON` so MPI ranks write [per-formulation NetCDF nexus output files](REALIZATION_CONFIGURATION.md#per_formulation_nexus_files) directly in parallel. Otherwise rank 0 gathers and writes serially.   |
+| [SQLite3](https://www.sqlite.org/cintro.html)                                              | external   |                    \> `3.7.17`                    |                                                                  Enables GeoPackage reading support                                                                   |
 # Details
 
 ## Google Test
@@ -48,17 +49,17 @@ If CMake is unable to find a compiler automatically, the CMake `CMAKE_C_COMPILER
 
 ### Version Requirements
 
-Project C++ code needs to be compliant with the C++ 14 standard.  Supported compilers need to be of a recent enough version to be compatible.  
+Project C++ code needs to be compliant with the C++ 17 standard.  Supported compilers need to be of a recent enough version to be compatible.  
 
 Additionally, C++ compilers needs to be compatible (ideally officially *tested* as such) with other project C++ dependencies.
 
 #### GCC
 
-Based on [this page](https://gcc.gnu.org/projects/cxx-status.html#cxx14), the C++ 14 support requirement probably equates to a version of GCC \>= version `5.0.0`.
+Based on [this page](https://gcc.gnu.org/projects/cxx-status.html#cxx17), the C++ 17 support requirement probably equates to some GCC version `7` release or later.
 
 #### Clang
 
-The Clang versioning scheme is a little convoluted.  Using the official scheme, Clang 3.4 and later should support all C++ 14 features.
+The Clang versioning scheme is a little convoluted.  Using the official scheme, Clang 5 and later should support all C++ 17 features.
 
 However, Apple likes to apply their own versioning to Clang and LLVM.  The `Apple LLVM version 10.0.1 (clang-1001.0.46.4)` version released with MacOS 10.14.x should do fine.  Recent, earlier version likely will as well, but YMMV.
 
@@ -227,3 +228,37 @@ source venv/bin/activate
 
 First, check if your compute system already have a version that is up to date, usually in the sub-directories (include/ and lib64/) under /usr. If not, you will have to install your own version. For instructions on how to install netCDF, some randomly selected references are [here](https://docs.unidata.ucar.edu/nug/current/getting_and_building_netcdf.html) and [here](https://docs.geoserver.org/main/en/user/extensions/netcdf-out/nc4.html).
 
+### Parallel NetCDF
+
+[Per-formulation NetCDF nexus output files](REALIZATION_CONFIGURATION.md#per_formulation_nexus_files) work in any ngen build with NetCDF support, including MPI builds, without requiring NetCDF-4 parallel I/O. In MPI builds, every non-root rank gathers its per-timestep nexus data to rank 0, which writes the full row through the standard (serial) NetCDF C API.
+
+To have each MPI rank write its own slice of the file directly via HDF5-parallel I/O, opt in at CMake configure time:
+
+    -DNGEN_WITH_PARALLEL_NETCDF=ON
+
+This option defaults to `OFF`. When set to `ON` it requires that the NetCDF-4 library located by CMake was itself built with parallel I/O support; CMake will fail with a `FATAL_ERROR` at configure time if the library does not provide it. [See here](https://docs.unidata.ucar.edu/netcdf-c/4.9.3/parallel_io.html) for details on parallel I/O in the NetCDF documentation.
+
+You can see both whether the NetCDF library found by CMake supports parallel I/O and whether `NGEN_WITH_PARALLEL_NETCDF` is enabled for this build by examining the CMake configure-time summary. Note the `Parallel` sub-item at the end of the NetCDF details and the `NGEN_WITH_PARALLEL_NETCDF` line under `Flags`.
+
+```
+...
+-- Environment summary:
+--   Boost:
+--     Version: 1.89.0
+--     Include: /Users/rbartel/Developer/oss/boost/current
+--   NetCDF:
+--     Version: 4.9.3
+--     Library: /opt/local/lib/libnetcdf.dylib
+--     Library (CXX): /opt/local/lib/libnetcdf_c++4.dylib
+--     Include: /opt/local/include
+--     Include (CXX): /opt/local/include
+--     Parallel: TRUE
+--   SQLite:
+--     Version: 3.49.1
+...
+--   Flags:
+--     NGEN_WITH_MPI: ON
+--     NGEN_WITH_NETCDF: ON
+--     NGEN_WITH_PARALLEL_NETCDF: OFF
+--     ...
+```

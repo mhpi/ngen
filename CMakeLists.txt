@@ -57,6 +57,7 @@ option(NGEN_QUIET            "Silence output"                     OFF)
 cmake_dependent_option(NGEN_WITH_ROUTING "Build with t-route integration" ON "NGEN_WITH_PYTHON" OFF)
 cmake_dependent_option(NGEN_UPDATE_GIT_SUBMODULES "Update submodules on configure" ON "GIT_FOUND;NGEN_HAS_GIT_DIR" OFF)
 cmake_dependent_option(NGEN_WITH_COVERAGE "Build with test coverage" OFF "NGEN_WITH_TESTS" OFF)
+cmake_dependent_option(NGEN_WITH_PARALLEL_NETCDF "Build with NetCDF using HDF5-parallel support" OFF "NGEN_WITH_NETCDF" OFF)
 
 option(BMI_FORTRAN_ISO_C_LIB_DIR "Directory hint for middleware Fortran shared lib handling iso_c_binding" "${NGEN_ROOT_DIR}/extern/iso_c_fortran_bmi/cmake_build")
 option(BMI_FORTRAN_ISO_C_LIB_NAME "Name for middleware Fortran shared lib handling iso_c_binding" "iso_c_bmi")
@@ -109,7 +110,7 @@ endif()
 
 # -----------------------------------------------------------------------------
 # Set global C++ options
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
@@ -140,6 +141,7 @@ endif()
 # If MPI support is enabled, set the C++ compiler to "mpicxx"
 if(NGEN_WITH_MPI)
     find_package(MPI REQUIRED)
+    add_compile_definitions(NGEN_WITH_MPI)
 endif()
 
 # -----------------------------------------------------------------------------
@@ -195,6 +197,14 @@ if(NGEN_WITH_NETCDF)
         set(NetCDF_CXX_INCLUDE_DIR "${NGEN_EXT_DIR}/netcdf-cxx4/netcdf-cxx4/cxx4")
         set(NetCDF_CXX_LIBRARY "${PROJECT_BINARY_DIR}/extern-libs/netcdf-cxx4/libnetcdf-cxx4.a")
         target_link_libraries(NetCDF INTERFACE netcdf-cxx4)
+    endif()
+
+    if(NGEN_WITH_PARALLEL_NETCDF)
+        if(NetCDF_HAS_PARALLEL)
+            add_compile_definitions(NGEN_WITH_PARALLEL_NETCDF)
+        else()
+            message(FATAL_ERROR "Asked for NGEN_WITH_PARALLEL_NETCDF, but using a NetCDF installation that doesn't support it")
+        endif()
     endif()
 endif()
 
@@ -318,10 +328,13 @@ add_subdirectory("src/geojson")
 add_subdirectory("src/bmi")
 add_subdirectory("src/realizations/catchment")
 add_subdirectory("src/forcing")
+add_subdirectory("src/utilities")
 add_subdirectory("src/utilities/mdarray")
 add_subdirectory("src/utilities/mdframe")
 add_subdirectory("src/utilities/logging")
 add_subdirectory("src/utilities/bmi")
+add_subdirectory("src/utilities/output")
+add_subdirectory("src/utilities/python")
 
 target_link_libraries(ngen
     PUBLIC
@@ -335,6 +348,8 @@ target_link_libraries(ngen
         NGen::core_mediator
         NGen::logging
         NGen::bmi_protocols
+        NGen::output
+        NGen::parallel
 )
 
 if(NGEN_WITH_SQLITE)
@@ -403,6 +418,7 @@ message(STATUS "----------------------------------------------------------------
 ngen_multiline_message(
 "NGen version: ${ngen_VERSION}"
 "Build configuration summary:"
+"  Source directory: ${CMAKE_SOURCE_DIR}"
 "  Generator: ${CMAKE_GENERATOR}"
 "  Build type: ${CMAKE_BUILD_TYPE}"
 "  System: ${CMAKE_SYSTEM_NAME}"
@@ -416,6 +432,7 @@ ngen_multiline_message(
 "  Flags:"
 "    NGEN_WITH_MPI: ${NGEN_WITH_MPI}"
 "    NGEN_WITH_NETCDF: ${NGEN_WITH_NETCDF}"
+"    NGEN_WITH_PARALLEL_NETCDF: ${NGEN_WITH_PARALLEL_NETCDF}"
 "    NGEN_WITH_SQLITE: ${NGEN_WITH_SQLITE}"
 "    NGEN_WITH_UDUNITS: ${NGEN_WITH_UDUNITS}"
 "    NGEN_WITH_BMI_FORTRAN: ${NGEN_WITH_BMI_FORTRAN}"

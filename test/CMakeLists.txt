@@ -35,6 +35,10 @@ if(NGEN_WITH_MPI)
     add_compile_definitions(NGEN_MPI_TESTS_ACTIVE)
 endif()
 
+if(NGEN_WITH_NETCDF)
+    add_compile_definitions(NGEN_NETCDF_TESTS_ACTIVE)
+endif()
+
 if(NGEN_WITH_BMI_C)
     add_compile_definitions(NGEN_BMI_C_LIB_TESTS_ACTIVE)
     add_external_subdirectory(
@@ -265,6 +269,40 @@ ngen_add_test(
         NGEN_WITH_MPI
 )
 
+########################## Specialized MPI Tests
+if (NGEN_WITH_MPI)
+    find_package(MPI REQUIRED)
+    add_executable(test_mpi_unit
+            gtest_mpi_main.cpp                          # Special test main() for use with MPI
+            utils/PerFormulationNexusOutputMgr_Test.cpp # Involved test files
+    )
+    # TODO: this might need more
+
+    target_include_directories(test_mpi_unit PUBLIC include/utils)
+    target_link_libraries(test_mpi_unit PUBLIC gtest NGen::core NGen::core_nexus NGen::output NetCDF MPI::MPI_C)
+    target_compile_definitions(test_mpi_unit PUBLIC NGEN_WITH_MPI NGEN_MPI_UNIT_TESTS)
+
+    #set_target_properties(test_mpi_unit PROPERTIES CROSSCOMPILING_EMULATOR '${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2')
+    set_target_properties(test_mpi_unit PROPERTIES
+            CROSSCOMPILING_EMULATOR "mpirun -np 2"
+            FOLDER test
+    )
+    #gtest_discover_tests(test_mpi_unit)
+
+
+    #set(TEST_MPI_CMD "mpirun" "-np" "2" "test_mpi_unit")
+    #set_target_properties(test_mpi_unit PROPERTIES
+    #        FOLDER test
+    #        VS_DEBUGGER_WORKING_DIRECTORY "${PROJECT_BINARY_DIR}"
+    #)
+    #add_test(
+    #        test_mpi_unit
+    #        COMMAND ${TEST_MPI_CMD}
+    #        #WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    #)
+endif ()
+
+
 ########################## Partitioning Tests
 ngen_add_test(
     test_partition
@@ -368,6 +406,7 @@ ngen_add_test(
     OBJECTS
         bmi/Bmi_Py_Adapter_Test.cpp
         realizations/catchments/Bmi_Py_Formulation_Test.cpp
+        utils/python/InterpreterUtil_Test.cpp
     LIBRARIES
         NGen::core
         NGen::realizations_catchment
@@ -418,6 +457,7 @@ ngen_add_test(
         NGen::core_mediator
         NGen::forcing
         NGen::ngen_bmi
+        NGen::output
     REQUIRES
         NGEN_WITH_BMI_C
         NGEN_WITH_BMI_FORTRAN
@@ -496,6 +536,7 @@ ngen_add_test(
         core/NetworkTests.cpp
         utils/include/StreamOutputTest.cpp
         realizations/Formulation_Manager_Test.cpp
+        utils/PerFormulationNexusOutputMgr_Test.cpp
         utils/Partition_Test.cpp
         utils/mdarray_Test.cpp
         utils/mdframe_Test.cpp
@@ -514,6 +555,7 @@ ngen_add_test(
         NGen::mdframe
         NGen::logging
         NGen::ngen_bmi
+        NGen::output
         testbmicppmodel
 )
 
