@@ -44,6 +44,7 @@ include(CMakeDependentOption)
 
 option(NGEN_WITH_MPI         "Build with MPI support"             OFF)
 option(NGEN_WITH_NETCDF      "Build with NetCDF support"          OFF)
+option(NGEN_WITH_HDF5        "Build with HDF5 support"            OFF)
 option(NGEN_WITH_SQLITE      "Build with SQLite3 support"         OFF)
 option(NGEN_WITH_UDUNITS     "Build with UDUNITS2 support"        ON)
 option(NGEN_WITH_BMI_FORTRAN "Build with Fortran BMI support"     OFF)
@@ -58,6 +59,7 @@ cmake_dependent_option(NGEN_WITH_ROUTING "Build with t-route integration" ON "NG
 cmake_dependent_option(NGEN_UPDATE_GIT_SUBMODULES "Update submodules on configure" ON "GIT_FOUND;NGEN_HAS_GIT_DIR" OFF)
 cmake_dependent_option(NGEN_WITH_COVERAGE "Build with test coverage" OFF "NGEN_WITH_TESTS" OFF)
 cmake_dependent_option(NGEN_WITH_PARALLEL_NETCDF "Build with NetCDF using HDF5-parallel support" OFF "NGEN_WITH_NETCDF" OFF)
+cmake_dependent_option(NGEN_WITH_ROUTING_TROUTE_BMI "Build with t-route integration called through a BMI implementation" OFF "NGEN_WITH_ROUTING" OFF)
 
 option(BMI_FORTRAN_ISO_C_LIB_DIR "Directory hint for middleware Fortran shared lib handling iso_c_binding" "${NGEN_ROOT_DIR}/extern/iso_c_fortran_bmi/cmake_build")
 option(BMI_FORTRAN_ISO_C_LIB_NAME "Name for middleware Fortran shared lib handling iso_c_binding" "iso_c_bmi")
@@ -140,7 +142,7 @@ endif()
 # -----------------------------------------------------------------------------
 # If MPI support is enabled, set the C++ compiler to "mpicxx"
 if(NGEN_WITH_MPI)
-    find_package(MPI REQUIRED)
+    find_package(MPI 3.0 COMPONENTS CXX REQUIRED)
     add_compile_definitions(NGEN_WITH_MPI)
 endif()
 
@@ -206,6 +208,12 @@ if(NGEN_WITH_NETCDF)
             message(FATAL_ERROR "Asked for NGEN_WITH_PARALLEL_NETCDF, but using a NetCDF installation that doesn't support it")
         endif()
     endif()
+endif()
+
+# -----------------------------------------------------------------------------
+if(NGEN_WITH_HDF5)
+    find_package(HDF5 REQUIRED COMPONENTS C CXX)
+    add_compile_definitions(NGEN_WITH_HDF5)
 endif()
 
 if(NGEN_WITH_EXTERN_SLOTH)
@@ -352,6 +360,10 @@ target_link_libraries(ngen
         NGen::parallel
 )
 
+if(NGEN_WITH_HDF5)
+    target_link_libraries(ngen PUBLIC hdf5::hdf5 hdf5::hdf5_cpp)
+endif()
+
 if(NGEN_WITH_SQLITE)
     add_subdirectory("src/geopackage")
     target_link_libraries(ngen PUBLIC NGen::geopackage)
@@ -433,12 +445,14 @@ ngen_multiline_message(
 "    NGEN_WITH_MPI: ${NGEN_WITH_MPI}"
 "    NGEN_WITH_NETCDF: ${NGEN_WITH_NETCDF}"
 "    NGEN_WITH_PARALLEL_NETCDF: ${NGEN_WITH_PARALLEL_NETCDF}"
+"    NGEN_WITH_HDF5: ${NGEN_WITH_HDF5}"
 "    NGEN_WITH_SQLITE: ${NGEN_WITH_SQLITE}"
 "    NGEN_WITH_UDUNITS: ${NGEN_WITH_UDUNITS}"
 "    NGEN_WITH_BMI_FORTRAN: ${NGEN_WITH_BMI_FORTRAN}"
 "    NGEN_WITH_BMI_C: ${NGEN_WITH_BMI_C}"
 "    NGEN_WITH_PYTHON: ${NGEN_WITH_PYTHON}"
 "    NGEN_WITH_ROUTING: ${NGEN_WITH_ROUTING}"
+"    NGEN_WITH_ROUTING_TROUTE_BMI: ${NGEN_WITH_ROUTING_TROUTE_BMI}"
 "    NGEN_WITH_TESTS: ${NGEN_WITH_TESTS}"
 "    NGEN_WITH_COVERAGE: ${NGEN_WITH_COVERAGE}"
 "    NGEN_QUIET: ${NGEN_QUIET}"
@@ -459,11 +473,6 @@ ngen_dependent_multiline_message(INTEL_DPCPP
 "    Include: ${SYCL_INCLUDE_DIR}"
 "    Implmentation: ${SYCL_IMPLEMENTATION_ID}")
 ngen_dependent_multiline_message(NGEN_WITH_MPI
-"  MPI (C):"
-"    Version: ${MPI_C_VERSION}"
-"    Library: ${MPI_C_LIBRARIES}"
-"    Include: ${MPI_C_INCLUDE_DIRS}")
-ngen_dependent_multiline_message(NGEN_WITH_MPI
 "  MPI (CXX):"
 "    Version: ${MPI_CXX_VERSION}"
 "    Library: ${_MPI_CXX_LIBS}"
@@ -476,6 +485,12 @@ ngen_dependent_multiline_message(NGEN_WITH_NETCDF
 "    Include: ${NetCDF_INCLUDE_DIR}"
 "    Include (CXX): ${NetCDF_CXX_INCLUDE_DIR}"
 "    Parallel: ${NetCDF_HAS_PARALLEL}")
+ngen_dependent_multiline_message(NGEN_WITH_HDF5
+"  HDF5:"
+"    Version: ${HDF5_VERSION}"
+"    Libraries: ${HDF5_LIBRARIES}"
+"    Include: ${HDF5_INCLUDE_DIRS}"
+"    Is Parallel: ${HDF5_IS_PARALLEL}")
 ngen_dependent_multiline_message(NGEN_WITH_SQLITE
 "  SQLite:"
 "    Version: ${SQLite3_VERSION}"

@@ -209,6 +209,10 @@ if(TARGET test_forcings_engine)
     # Use global add instead of target add so that both `test_forcings_engine` and `test_all`
     # receive this compile definition.
     add_compile_definitions(NGEN_LUMPED_CONFIG_PATH="${CMAKE_CURRENT_BINARY_DIR}/config_aorc.yml")
+
+    if(NGEN_WITH_MPI)
+        target_link_libraries(test_forcings_engine PRIVATE MPI::MPI_CXX)
+    endif()
 endif()
 
 ########################## BMI Protocol Unit Tests
@@ -279,7 +283,7 @@ if (NGEN_WITH_MPI)
     # TODO: this might need more
 
     target_include_directories(test_mpi_unit PUBLIC include/utils)
-    target_link_libraries(test_mpi_unit PUBLIC gtest NGen::core NGen::core_nexus NGen::output NetCDF MPI::MPI_C)
+    target_link_libraries(test_mpi_unit PUBLIC gtest NGen::core NGen::core_nexus NGen::output NetCDF MPI::MPI_CXX)
     target_compile_definitions(test_mpi_unit PUBLIC NGEN_WITH_MPI NGEN_MPI_UNIT_TESTS)
 
     #set_target_properties(test_mpi_unit PROPERTIES CROSSCOMPILING_EMULATOR '${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2')
@@ -503,18 +507,26 @@ ngen_add_test(
         NGen::geojson
 )
 
+########################## NgenSimulation Class Tests
+ngen_add_test(
+    test_ngen_simulation
+    OBJECTS
+        core/NgenSimulationTests.cpp
+    LIBRARIES
+        NGen::core
+        NGen::geojson
+        NGen::logging
+        NGen::core_mediator
+        NGen::ngen_bmi
+)
+
 ########################### Netcdf Forcing Tests
 ngen_add_test(
     test_netcdf_forcing
     OBJECTS
         forcing/NetCDFPerFeatureDataProvider_Test.cpp
     LIBRARIES
-        NGen::core
-        NGen::core_nexus
-        NGen::core_mediator
         NGen::forcing
-        NGen::geojson
-        NGen::realizations_catchment
     REQUIRES
         NGEN_WITH_NETCDF
 )
