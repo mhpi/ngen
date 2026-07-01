@@ -3,7 +3,7 @@
 # Adapted from
 # - noaa-ngen/docker/CENTOS_NGEN_RUN.dockerfile
 # - ciroh-ua/NGIAB-CloudInfra/docker/Dockerfile
-# 
+#
 # Uses CIROH-UA T-Route fork for compatibility.
 ARG NPROC=8
 ARG NGEN_REPO=mhpi/ngen
@@ -125,8 +125,8 @@ WORKDIR /ngen
 ADD https://api.github.com/repos/${NGEN_REPO}/git/refs/heads/${NGEN_BRANCH} /tmp/version.json
 RUN git clone --depth 1 --single-branch -b ${NGEN_BRANCH} https://github.com/${NGEN_REPO}.git \
     && cd ngen \
-    && git submodule update --init --recursive --jobs ${NPROC} --depth 1 
-    # && git submodule update --init --recursive --remote --jobs ${NPROC} --depth 1 
+    && git submodule update --init --recursive --jobs ${NPROC} --depth 1
+    # && git submodule update --init --recursive --remote --jobs ${NPROC} --depth 1
 
 
 # Stage 7: Build ngen
