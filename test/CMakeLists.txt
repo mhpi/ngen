@@ -518,6 +518,7 @@ ngen_add_test(
         NGen::logging
         NGen::core_mediator
         NGen::ngen_bmi
+        $<$<BOOL:${NGEN_WITH_ROUTING}>:NGen::routing>
 )
 
 ########################### Netcdf Forcing Tests
