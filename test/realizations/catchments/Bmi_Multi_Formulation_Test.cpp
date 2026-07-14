@@ -596,6 +596,28 @@ TEST_F(Bmi_Multi_Formulation_Test, Initialize_3_c) {
     }
 }
 
+/** With output_header_fields set (matching the output_variables count), the output header uses those
+ * configured labels instead of the variable names. */
+TEST_F(Bmi_Multi_Formulation_Test, Initialize_output_header_fields) {
+    int ex_index = 3;   // example 3 has 6 explicit output_variables
+
+    // Inject a matching-size output_header_fields array into the parsed config.
+    boost::property_tree::ptree props = config_prop_ptree[ex_index];
+    boost::property_tree::ptree headers;
+    const std::vector<std::string> labels = {"h0", "h1", "h2", "h3", "h4", "h5"};
+    for (const std::string& label : labels) {
+        boost::property_tree::ptree item;
+        item.put_value(label);
+        headers.push_back(std::make_pair("", item));
+    }
+    props.put_child("output_header_fields", headers);
+
+    Bmi_Multi_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    formulation.create_formulation(props);
+
+    EXPECT_EQ(formulation.get_output_header_line(","), "h0,h1,h2,h3,h4,h5");
+}
+
 /** Test to make sure the a non-existent variable name is not allowed in `output_variables` (see issue #535). */
 TEST_F(Bmi_Multi_Formulation_Test, Initialize_4_Fails) {
     int ex_index = 4;
@@ -846,7 +868,7 @@ TEST_F(Bmi_Multi_Formulation_Test, GetOutputLineForTimestep_3_a) {
         formulation.get_response(i++, 3600);
     formulation.get_response(i, 3600);
     std::string output = formulation.get_output_line_for_timestep(i, ",");
-    ASSERT_EQ(output, "0.000001112,199280.000000000,199240.000000000,199280.000000000,0.000000000,0.000001001");
+    ASSERT_EQ(output, "0.000001,199280.000000,199240.000000,199280.000000,0.000000,0.000001");
 }
 
 /**

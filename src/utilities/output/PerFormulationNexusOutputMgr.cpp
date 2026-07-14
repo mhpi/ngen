@@ -18,6 +18,13 @@ limitations under the License.
 
 #include "PerFormulationNexusOutputMgr.hpp"
 
+#include <cstdint>
+#include <cstring>
+
+#if NGEN_WITH_MPI && !NGEN_WITH_PARALLEL_NETCDF
+#include "utilities/parallel_utils.h"
+#endif
+
 utils::PerFormulationNexusOutputMgr::PerFormulationNexusOutputMgr(
     const std::vector<std::string>& nexus_ids,
     std::shared_ptr<std::vector<std::string>> formulation_ids,
@@ -399,6 +406,15 @@ std::string utils::PerFormulationNexusOutputMgr::parse_netcdf_return_code(const 
     }
 }
 
+void utils::PerFormulationNexusOutputMgr::pack_nexus_id(const std::string& nexus_id, char* buffer) {
+    if (nexus_id.size() > nexus_id_string_width) {
+        throw std::runtime_error("Nexus id '" + nexus_id + "' length " + std::to_string(nexus_id.size())
+            + " exceeds the maximum NetCDF feature id width of " + std::to_string(nexus_id_string_width) + ".");
+    }
+    std::memcpy(buffer, nexus_id.data(), nexus_id.size());
+    std::memset(buffer + nexus_id.size(), '\0', nexus_id_string_width - nexus_id.size());
+}
+
 void utils::PerFormulationNexusOutputMgr::add_dimension(const std::string& dim_name, const size_t size,
                                                         int* dim_id_ptr) const {
     int nc_status = nc_def_dim(netcdf_file_id, dim_name.c_str(), size, dim_id_ptr);
@@ -523,13 +539,17 @@ void utils::PerFormulationNexusOutputMgr::lookup_netcdf_metadata() {
 }
 
 void utils::PerFormulationNexusOutputMgr::setup_netcdf_metadata() {
-    int nc_nex_id_dim_id, nc_time_dim_id;
+    int nc_nex_id_dim_id, nc_time_dim_id, nc_id_str_len_dim_id;
 
     add_dimension(nc_dim_name_nexus_id, total_nexus_count, &nc_nex_id_dim_id);
     add_dimension(nc_dim_name_time, total_timesteps, &nc_time_dim_id);
+    // Fixed-width string-length dimension backing the 2-D char feature_id variable, so the full id string
+    // (prefix included) is preserved verbatim rather than collapsed to a numeric value.
+    add_dimension(nc_dim_name_id_str_len, nexus_id_string_width, &nc_id_str_len_dim_id);
 
     std::map<std::string, std::string> nex_id_var_attrs = {{"long_name", "Feature ID"}};
-    add_variable(nc_dim_name_nexus_id, NC_UINT, {nc_nex_id_dim_id}, nex_id_var_attrs, &nc_var_id_nexus_id);
+    add_variable(nc_dim_name_nexus_id, NC_CHAR, {nc_nex_id_dim_id, nc_id_str_len_dim_id}, nex_id_var_attrs,
+                 &nc_var_id_nexus_id);
 
     std::map<std::string, std::string> time_var_attrs = {
         {"units", "minutes since 1970-01-01 00:00:00"},
@@ -562,35 +582,29 @@ void utils::PerFormulationNexusOutputMgr::write_nexus_ids_once() const {
     if (current_time_index != 0)
         return;
 
-    std::vector<unsigned int> numeric_nex_ids(nexus_ids.size());
-    const char delimiter = '-';
-
+    // Pack each local nexus id verbatim (full string, prefix included) into a contiguous block of fixed-width,
+    // null-padded char records (one record of nexus_id_string_width chars per nexus).
+    std::vector<char> packed_nex_ids(nexus_ids.size() * nexus_id_string_width);
     for (size_t i = 0; i < nexus_ids.size(); ++i) {
-        const std::string::size_type pos = nexus_ids[i].find(delimiter);
-        if (pos == std::string::npos) {
-            throw std::runtime_error("Invalid nexus id '" + nexus_ids[i] + "' (no delimiter '"
-                + std::string(1, delimiter) + "').");
-        }
-        numeric_nex_ids[i] = std::stoi(nexus_ids[i].substr(pos + 1));
+        pack_nexus_id(nexus_ids[i], packed_nex_ids.data() + i * nexus_id_string_width);
     }
 
 #if NGEN_WITH_MPI && !NGEN_WITH_PARALLEL_NETCDF
     if (gather_to_root) {
-        // Gather every rank's numeric nexus ids to rank 0, then rank 0 writes the full vector once.
-        std::vector<unsigned int> all_numeric_nex_ids;
-        if (obj_id == 0) {
-            all_numeric_nex_ids.resize(total_nexus_count);
-        }
-        MPI_Gatherv(numeric_nex_ids.data(), static_cast<int>(numeric_nex_ids.size()), MPI_UNSIGNED,
-                    all_numeric_nex_ids.data(), gather_recvcounts.data(), gather_displs.data(), MPI_UNSIGNED,
-                    0, MPI_COMM_WORLD);
+        // Gather every rank's full nexus id strings to rank 0 (in rank-contiguous order), then rank 0 packs
+        // them into the fixed-width, null-padded char block and writes it once.
+        std::vector<std::string> all_nex_ids = parallel::gather_strings(nexus_ids, MPI_COMM_WORLD);
         if (obj_id != 0) {
             return;
         }
-        std::vector<size_t> start{0};
-        std::vector<size_t> count{static_cast<size_t>(total_nexus_count)};
-        int nc_status = nc_put_vara_uint(netcdf_file_id, nc_var_id_nexus_id, start.data(), count.data(),
-                                         all_numeric_nex_ids.data());
+        std::vector<char> all_packed_nex_ids(static_cast<size_t>(total_nexus_count) * nexus_id_string_width);
+        for (size_t i = 0; i < all_nex_ids.size(); ++i) {
+            pack_nexus_id(all_nex_ids[i], all_packed_nex_ids.data() + i * nexus_id_string_width);
+        }
+        std::vector<size_t> start{0, 0};
+        std::vector<size_t> count{static_cast<size_t>(total_nexus_count), nexus_id_string_width};
+        int nc_status = nc_put_vara_text(netcdf_file_id, nc_var_id_nexus_id, start.data(), count.data(),
+                                         all_packed_nex_ids.data());
         if (nc_status != NC_NOERR) {
             throw std::runtime_error("Error writing nexus ids to netcdf for nexus output manager: "
                 + parse_netcdf_return_code(nc_status));
@@ -599,11 +613,11 @@ void utils::PerFormulationNexusOutputMgr::write_nexus_ids_once() const {
     }
 #endif
 
-    std::vector<size_t> start{this->local_offset};
-    std::vector<size_t> count{numeric_nex_ids.size()};
+    std::vector<size_t> start{this->local_offset, 0};
+    std::vector<size_t> count{nexus_ids.size(), nexus_id_string_width};
 
-    int nc_status = nc_put_vara_uint(netcdf_file_id, nc_var_id_nexus_id, start.data(), count.data(),
-                                     numeric_nex_ids.data());
+    int nc_status = nc_put_vara_text(netcdf_file_id, nc_var_id_nexus_id, start.data(), count.data(),
+                                     packed_nex_ids.data());
     if (nc_status != NC_NOERR) {
         throw std::runtime_error("Error writing nexus ids to netcdf for nexus output manager: "
             + parse_netcdf_return_code(nc_status));

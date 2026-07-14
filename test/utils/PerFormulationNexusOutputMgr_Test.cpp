@@ -16,6 +16,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include <cstring>
+#include <algorithm>
+
 #include "HY_HydroNexus.hpp"
 
 #include <netcdf>
@@ -46,6 +49,34 @@ protected:
 
     static void friend_write_nexus_ids_once(utils::PerFormulationNexusOutputMgr* obj) {
         return obj->write_nexus_ids_once();
+    }
+
+    static size_t friend_nexus_id_string_width() {
+        return utils::PerFormulationNexusOutputMgr::nexus_id_string_width;
+    }
+
+    static void friend_pack_nexus_id(const std::string& nexus_id, char* buffer) {
+        utils::PerFormulationNexusOutputMgr::pack_nexus_id(nexus_id, buffer);
+    }
+
+    /**
+     * Read the 2-D fixed-width char ``feature_id`` variable back and reconstruct the full string id for each
+     * nexus, taking the characters up to the first null (CF-style fixed-width char labels).
+     *
+     * @param var The ``feature_id`` NetCDF variable (dimensioned by nexus count then fixed string width).
+     * @param count The number of nexus id records to read.
+     * @return Vector of reconstructed full string ids, prefix included.
+     */
+    static std::vector<std::string> read_feature_id_strings(const netCDF::NcVar& var, size_t count) {
+        const size_t width = friend_nexus_id_string_width();
+        std::vector<char> chars(count * width);
+        var.getVar(chars.data());
+        std::vector<std::string> ids(count);
+        for (size_t i = 0; i < count; ++i) {
+            const char* start = chars.data() + i * width;
+            ids[i] = std::string(start, strnlen(start, width));
+        }
+        return ids;
     }
 
     /*
@@ -101,6 +132,35 @@ protected:
     std::vector<std::vector<double>> ex_3_all_data;
 
     // TODO: Might also need EX 4 with 40396 nexuses but spread about real partitions (and tested exclusively via the MPI stuff)
+
+    // Example 5: nexus feature id collision scenario. It is possible for the same numeric suffix to appear
+    // under more than one id prefix (here the regular "nex-" prefix alongside a "tnx-" prefix, nex-1
+    // alongside tnx-1); the collision is only of the numeric component, since the full ids remain distinct.
+    // The full string feature ids must therefore be written out so the two physically distinct nexuses stay
+    // distinct rather than collapsing to a single numeric id. Distinct flow values per id let the read-back
+    // verify each row.
+    std::shared_ptr<std::vector<std::string>> ex_5_form_names = std::make_shared<std::vector<std::string>>(std::vector<std::string>{"form-0"});
+    std::vector<std::string> ex_5_form_0_all_nexus_id = {"nex-1", "tnx-1", "nex-2", "tnx-2"};
+    std::vector<std::vector<double>> ex_5_all_data = {{1.0, 101.0, 2.0, 102.0}, {11.0, 111.0, 12.0, 112.0}};
+    std::vector<std::string> ex_5_timestamps = {"2025-01-01T00:00:00Z", "2025-01-01T01:00:00Z"};
+    std::vector<std::time_t> ex_5_timestamps_seconds = {1735707600, 1735711200};
+
+    // Example 6: the nexus feature id (numeric) collision exercised across MPI ranks. The colliding
+    // pair (nex-1 / tnx-1) is split one id per rank, so the single output file can only be correct if the
+    // MPI gather-to-root path assembles both ranks' fixed-width string ids (not just the in-process write).
+    // Rank 0 owns the regular "nex-" ids and rank 1 owns the terminal "tnx-" ids; the global file order is
+    // rank-contiguous (rank 0's block then rank 1's block). Distinct per-id flow values let the read-back
+    // verify each row and catch any cross-rank row mix-up.
+    std::shared_ptr<std::vector<std::string>> ex_6_form_names = std::make_shared<std::vector<std::string>>(std::vector<std::string>{"form-0"});
+    std::vector<std::string> ex_6_form_0_group_a_nexus_ids = {"nex-1", "nex-2"};                      // rank 0
+    std::vector<std::string> ex_6_form_0_group_b_nexus_ids = {"tnx-1", "tnx-2"};                      // rank 1
+    std::vector<std::string> ex_6_form_0_all_nexus_id = {"nex-1", "nex-2", "tnx-1", "tnx-2"};         // global, rank-contiguous
+    std::vector<std::vector<double>> ex_6_group_a_data = {{1.0, 2.0}, {11.0, 12.0}};
+    std::vector<std::vector<double>> ex_6_group_b_data = {{101.0, 102.0}, {111.0, 112.0}};
+    std::vector<std::vector<double>> ex_6_all_data = {{1.0, 2.0, 101.0, 102.0}, {11.0, 12.0, 111.0, 112.0}};
+    std::vector<std::string> ex_6_timestamps = {"2025-01-01T00:00:00Z", "2025-01-01T01:00:00Z"};
+    std::vector<std::time_t> ex_6_timestamps_seconds = {1735707600, 1735711200};
+    size_t ex_6_num_time_steps = 2;
 
     std::vector<std::string> files_to_cleanup;
 
@@ -395,16 +455,111 @@ TEST_F(PerFormulationNexusOutputMgr_Test, commit_writes_2_b)
 
     ASSERT_FALSE(nc_var_nex_ids.isNull());
     ASSERT_EQ(nc_var_nex_ids.getDim(0).getSize(), ex_2_form_0_all_nexus_id.size());
+    // feature_id is now a 2-D fixed-width char variable: nexus dimension then string-length dimension.
+    ASSERT_EQ(nc_var_nex_ids.getDim(1).getSize(), friend_nexus_id_string_width());
 
-    // Note that nexus feature_id dim comes before time dim, so have to order this way
-    std::vector<unsigned int> nex_id_numeric(ex_2_form_0_all_nexus_id.size());
-    nc_var_nex_ids.getVar(nex_id_numeric.data());
-
-    std::vector<std::string> nex_id_strs(nex_id_numeric.size());
-    for (size_t i = 0; i < nex_id_strs.size(); ++i) {
-        nex_id_strs[i] = "nex-" + std::to_string(nex_id_numeric[i]);
-    }
+    std::vector<std::string> nex_id_strs = read_feature_id_strings(nc_var_nex_ids, ex_2_form_0_all_nexus_id.size());
     ASSERT_EQ(nex_id_strs, ex_2_form_0_all_nexus_id);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+}
+
+/**
+ * Test the MPI gather-to-root write path for a nexus feature id collision.
+ *
+ * The colliding pair nex-1 / tnx-1 is split across ranks (rank 0 owns the regular "nex-" ids, rank 1 owns
+ * the terminal "tnx-" ids), so a correct single output file requires the fixed-width MPI_CHAR id gather to
+ * assemble both ranks' ids — the in-process single-instance write alone could never reproduce this. Asserts
+ * every rank's id is present as a distinct full string in the correct global (rank-contiguous) order, that
+ * the colliding pair occupies distinct rows, and that each row's flow data matches what was sent for that
+ * specific id, so a cross-rank row mix-up would be caught.
+ */
+TEST_F(PerFormulationNexusOutputMgr_Test, commit_writes_6_a)
+{
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // Expect exactly two ranks (the colliding pair is split one id per rank)
+    ASSERT_LE(rank, 1);
+    ASSERT_EQ(size, 2);
+
+    // Pick the right nexus id and data group for this rank
+    std::vector<std::string> *nexus_ids;
+    std::vector<std::vector<double>> *group_data;
+    if (rank == 0) {
+        nexus_ids = &ex_6_form_0_group_a_nexus_ids;
+        group_data = &ex_6_group_a_data;
+    }
+    else {
+        nexus_ids = &ex_6_form_0_group_b_nexus_ids;
+        group_data = &ex_6_group_b_data;
+    }
+
+    // Create manager instance for this rank
+    const std::vector<int> nexus_per_rank = {
+        static_cast<int>(ex_6_form_0_group_a_nexus_ids.size()), static_cast<int>(ex_6_form_0_group_b_nexus_ids.size())
+    };
+    std::vector<int> local_offsets = {0, nexus_per_rank[0]};
+    utils::PerFormulationNexusOutputMgr mgr(*nexus_ids, ex_6_form_names, output_root, ex_6_num_time_steps, rank, local_offsets[rank], 2, ex_6_form_0_all_nexus_id.size());
+
+    // Add to files_to_clean_up, but only for rank 0 to deal with (they should be the same sets of files)
+    if (rank == 0) {
+        std::shared_ptr<std::vector<std::string>> filenames = mgr.get_filenames();
+        for (const std::string& f : *filenames) {
+            files_to_cleanup.push_back(f);
+        }
+    }
+
+    // Write for this rank's nexuses over both time steps
+    for (size_t t = 0; t < ex_6_timestamps.size(); ++t) {
+        for (size_t n = 0; n < nexus_ids->size(); ++n) {
+            mgr.receive_data_entry(ex_6_form_names->at(0),
+                                   nexus_ids->at(n),
+                                   utils::time_marker(t, ex_6_timestamps_seconds[t], ex_6_timestamps[t]),
+                                   group_data->at(t)[n]);
+        }
+        mgr.commit_writes();
+    }
+
+    mgr.close();
+
+    // When done writing everything, another barrier before any checks/asserts
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // Read back the single assembled file and verify ids and flow together
+    const netCDF::NcFile ncf(mgr.get_filenames()->at(0), netCDF::NcFile::read);
+
+    // feature_id: every rank's id present as a distinct, exact full string in the correct global order
+    const netCDF::NcVar nc_var_nex_ids = ncf.getVar(friend_get_nc_nex_id_dim_name(&mgr));
+    ASSERT_FALSE(nc_var_nex_ids.isNull());
+    ASSERT_EQ(nc_var_nex_ids.getDim(0).getSize(), ex_6_form_0_all_nexus_id.size());
+    // feature_id is a 2-D fixed-width char variable: nexus dimension then string-length dimension.
+    ASSERT_EQ(nc_var_nex_ids.getDim(1).getSize(), friend_nexus_id_string_width());
+
+    std::vector<std::string> nex_id_strs = read_feature_id_strings(nc_var_nex_ids, ex_6_form_0_all_nexus_id.size());
+    ASSERT_EQ(nex_id_strs, ex_6_form_0_all_nexus_id);
+
+    // The colliding pair, gathered from two different ranks, must occupy distinct rows (the core of the bug).
+    auto nex1_it = std::find(nex_id_strs.begin(), nex_id_strs.end(), "nex-1");
+    auto tnx1_it = std::find(nex_id_strs.begin(), nex_id_strs.end(), "tnx-1");
+    ASSERT_NE(nex1_it, nex_id_strs.end());
+    ASSERT_NE(tnx1_it, nex_id_strs.end());
+    ASSERT_NE(nex1_it, tnx1_it) << "nex-1 and tnx-1 must occupy distinct rows, not a single collapsed id";
+
+    // Each row's flow data must match what was sent for that specific id, so the distinct ids are not merely
+    // labels on data swapped/merged between ranks during the gather.
+    const netCDF::NcVar flow = ncf.getVar(friend_get_nc_flow_var_name(&mgr));
+    ASSERT_FALSE(flow.isNull());
+    ASSERT_EQ(flow.getDim(0).getSize(), ex_6_form_0_all_nexus_id.size());
+    ASSERT_EQ(flow.getDim(1).getSize(), ex_6_num_time_steps);
+    // Note that nexus feature_id dim comes before time dim, so have to order this way
+    double values[4][2];
+    flow.getVar(values);
+    for (size_t t = 0; t < ex_6_timestamps.size(); ++t) {
+        for (size_t n = 0; n < ex_6_form_0_all_nexus_id.size(); ++n) {
+            ASSERT_EQ(values[n][t], ex_6_all_data[t][n])
+                << "Flow mismatch for nexus id " << nex_id_strs[n] << " at time step " << t;
+        }
+    }
 
     MPI_Barrier(MPI_COMM_WORLD);
 }
@@ -791,14 +946,10 @@ TEST_F(PerFormulationNexusOutputMgr_Test, commit_writes_0_d)
 
     // These should all have size 4 for the current example, equal to the size of ex_0_form_0_nexus_ids
     ASSERT_EQ(nexus_ids.getDim(0).getSize(), 4);
+    // feature_id is now a 2-D fixed-width char variable: nexus dimension then string-length dimension.
+    ASSERT_EQ(nexus_ids.getDim(1).getSize(), friend_nexus_id_string_width());
 
-    std::vector<unsigned int> nex_id_numeric(4);
-    nexus_ids.getVar(nex_id_numeric.data());
-
-    std::vector<std::string> nex_id_strs(nex_id_numeric.size());
-    for (size_t i = 0; i < nex_id_strs.size(); ++i) {
-        nex_id_strs[i] = "nex-" + std::to_string(nex_id_numeric[i]);
-    }
+    std::vector<std::string> nex_id_strs = read_feature_id_strings(nexus_ids, ex_0_form_0_nexus_ids.size());
 
     ASSERT_EQ(nex_id_strs, ex_0_form_0_nexus_ids);
 }
@@ -954,15 +1105,77 @@ TEST_F(PerFormulationNexusOutputMgr_Test, commit_writes_1_c)
 
     // These should all have size 8 for the current example, equal to the size of ex_1_form_0_all_nexus_id
     ASSERT_EQ(nexus_ids.getDim(0).getSize(), 8);
-    std::vector<unsigned int> nex_id_numeric(8);
-    nexus_ids.getVar(nex_id_numeric.data());
+    // feature_id is now a 2-D fixed-width char variable: nexus dimension then string-length dimension.
+    ASSERT_EQ(nexus_ids.getDim(1).getSize(), friend_nexus_id_string_width());
 
-    std::vector<std::string> nex_id_strs(nex_id_numeric.size());
-    for (size_t i = 0; i < nex_id_strs.size(); ++i) {
-        nex_id_strs[i] = "nex-" + std::to_string(nex_id_numeric[i]);
-    }
+    std::vector<std::string> nex_id_strs = read_feature_id_strings(nexus_ids, ex_1_form_0_all_nexus_id.size());
 
     ASSERT_EQ(nex_id_strs, ex_1_form_0_all_nexus_id);
+}
+
+/**
+ * Regression test for a nexus feature id (numeric) collision (single instance, end-to-end).
+ *
+ * The nexus id set contains the colliding pair nex-1 and tnx-1, which share the numeric suffix 1. Under the
+ * old integer feature_id schema both collapsed to feature_id == 1, conflating two physically distinct
+ * nexuses; with the full-string id schema they must read back as two distinct rows ("nex-1" and "tnx-1"),
+ * each carrying its own flow data. tnx-2/nex-2 are included so the collision is not the only id present.
+ */
+TEST_F(PerFormulationNexusOutputMgr_Test, commit_writes_5_a)
+{
+    std::string form_name = ex_5_form_names->at(0);
+
+    utils::PerFormulationNexusOutputMgr mgr(ex_5_form_0_all_nexus_id, ex_5_form_names, output_root, ex_5_timestamps.size());
+
+    // Make sure we know what files to clean up
+    std::shared_ptr<std::vector<std::string>> filenames = mgr.get_filenames();
+    for (const std::string& f : *filenames) {
+        files_to_cleanup.push_back(f);
+    }
+
+    for (size_t t = 0; t < ex_5_timestamps.size(); ++t) {
+        for (size_t n = 0; n < ex_5_form_0_all_nexus_id.size(); ++n) {
+            mgr.receive_data_entry(form_name,
+                                   ex_5_form_0_all_nexus_id[n],
+                                   utils::time_marker(t, ex_5_timestamps_seconds[t], ex_5_timestamps[t]),
+                                   ex_5_all_data[t][n]);
+        }
+        mgr.commit_writes();
+    }
+
+    // Should only be one filename
+    const netCDF::NcFile ncf(filenames->at(0), netCDF::NcFile::read);
+
+    // The feature_id char variable must contain every id as a distinct, exact full string (prefix included).
+    const netCDF::NcVar nexus_ids = ncf.getVar(friend_get_nc_nex_id_dim_name(&mgr));
+    ASSERT_FALSE(nexus_ids.isNull());
+    ASSERT_EQ(nexus_ids.getDim(0).getSize(), ex_5_form_0_all_nexus_id.size());
+    // feature_id is a 2-D fixed-width char variable: nexus dimension then string-length dimension.
+    ASSERT_EQ(nexus_ids.getDim(1).getSize(), friend_nexus_id_string_width());
+
+    std::vector<std::string> nex_id_strs = read_feature_id_strings(nexus_ids, ex_5_form_0_all_nexus_id.size());
+    ASSERT_EQ(nex_id_strs, ex_5_form_0_all_nexus_id);
+
+    // Explicitly confirm the colliding pair is present as two distinct rows (the core of the bug).
+    auto nex1_it = std::find(nex_id_strs.begin(), nex_id_strs.end(), "nex-1");
+    auto tnx1_it = std::find(nex_id_strs.begin(), nex_id_strs.end(), "tnx-1");
+    ASSERT_NE(nex1_it, nex_id_strs.end());
+    ASSERT_NE(tnx1_it, nex_id_strs.end());
+    ASSERT_NE(nex1_it, tnx1_it) << "nex-1 and tnx-1 must occupy distinct rows, not a single collapsed id";
+
+    // Each row's flow data must match what was sent for that specific id across both time steps, so the
+    // distinct ids are not merely labels on swapped/merged data.
+    const netCDF::NcVar flow = ncf.getVar(friend_get_nc_flow_var_name(&mgr));
+    ASSERT_FALSE(flow.isNull());
+    // Note that nexus feature_id dim comes before time dim, so have to order this way
+    double values[4][2];
+    flow.getVar(values);
+    for (size_t t = 0; t < ex_5_timestamps.size(); ++t) {
+        for (size_t n = 0; n < ex_5_form_0_all_nexus_id.size(); ++n) {
+            ASSERT_EQ(values[n][t], ex_5_all_data[t][n])
+                << "Flow mismatch for nexus id " << nex_id_strs[n] << " at time step " << t;
+        }
+    }
 }
 
 /** Make sure writes work for example 2 for multiple time steps, but using just a single instance. */
@@ -1148,14 +1361,10 @@ TEST_F(PerFormulationNexusOutputMgr_Test, write_nexus_ids_once_0_a)
 
     // These should all have size 4 for the current example, equal to the size of ex_0_form_0_nexus_ids
     ASSERT_EQ(nexus_ids.getDim(0).getSize(), 4);
+    // feature_id is now a 2-D fixed-width char variable: nexus dimension then string-length dimension.
+    ASSERT_EQ(nexus_ids.getDim(1).getSize(), friend_nexus_id_string_width());
 
-    std::vector<unsigned int> nex_id_numeric(4);
-    nexus_ids.getVar(nex_id_numeric.data());
-
-    std::vector<std::string> nex_id_strs(nex_id_numeric.size());
-    for (size_t i = 0; i < nex_id_strs.size(); ++i) {
-        nex_id_strs[i] = "nex-" + std::to_string(nex_id_numeric[i]);
-    }
+    std::vector<std::string> nex_id_strs = read_feature_id_strings(nexus_ids, ex_0_form_0_nexus_ids.size());
 
     ASSERT_EQ(nex_id_strs, ex_0_form_0_nexus_ids);
 }
@@ -1191,15 +1400,56 @@ TEST_F(PerFormulationNexusOutputMgr_Test, write_nexus_ids_once_1_a)
 
     // These should all have size 8 for the current example, equal to the size of ex_1_form_0_all_nexus_id
     ASSERT_EQ(nexus_ids.getDim(0).getSize(), 8);
-    std::vector<unsigned int> nex_id_numeric(8);
-    nexus_ids.getVar(nex_id_numeric.data());
+    // feature_id is now a 2-D fixed-width char variable: nexus dimension then string-length dimension.
+    ASSERT_EQ(nexus_ids.getDim(1).getSize(), friend_nexus_id_string_width());
 
-    std::vector<std::string> nex_id_strs(nex_id_numeric.size());
-    for (size_t i = 0; i < nex_id_strs.size(); ++i) {
-        nex_id_strs[i] = "nex-" + std::to_string(nex_id_numeric[i]);
-    }
+    std::vector<std::string> nex_id_strs = read_feature_id_strings(nexus_ids, ex_1_form_0_all_nexus_id.size());
 
     ASSERT_EQ(nex_id_strs, ex_1_form_0_all_nexus_id);
+}
+
+/** Test that pack_nexus_id packs a normal id verbatim and null-pads the rest of the fixed-width buffer. */
+TEST_F(PerFormulationNexusOutputMgr_Test, pack_nexus_id_a)
+{
+    const size_t width = friend_nexus_id_string_width();
+    // Pre-fill with a non-null sentinel so the null padding is actually verified (not just left-over zeros).
+    std::vector<char> buffer(width, 'X');
+    const std::string id = "tnx-1";
+
+    friend_pack_nexus_id(id, buffer.data());
+
+    // The id bytes are copied verbatim, prefix included.
+    for (size_t i = 0; i < id.size(); ++i) {
+        ASSERT_EQ(buffer[i], id[i]) << "Mismatch at byte " << i;
+    }
+    // Everything after the id is null padding.
+    for (size_t i = id.size(); i < width; ++i) {
+        ASSERT_EQ(buffer[i], '\0') << "Expected null padding at byte " << i;
+    }
+}
+
+/** Test that pack_nexus_id handles an id exactly the fixed width, filling every byte with no null terminator. */
+TEST_F(PerFormulationNexusOutputMgr_Test, pack_nexus_id_b)
+{
+    const size_t width = friend_nexus_id_string_width();
+    const std::string id(width, 'a'); // exactly the fixed width
+    std::vector<char> buffer(width, '\0');
+
+    friend_pack_nexus_id(id, buffer.data());
+
+    for (size_t i = 0; i < width; ++i) {
+        ASSERT_EQ(buffer[i], 'a') << "Expected full-width fill at byte " << i;
+    }
+}
+
+/** Test that pack_nexus_id throws when the id is longer than the fixed width (no silent truncation). */
+TEST_F(PerFormulationNexusOutputMgr_Test, pack_nexus_id_c)
+{
+    const size_t width = friend_nexus_id_string_width();
+    const std::string id(width + 1, 'a'); // one char too long to fit
+    std::vector<char> buffer(width, '\0');
+
+    ASSERT_THROW(friend_pack_nexus_id(id, buffer.data()), std::runtime_error);
 }
 
 #endif // #if NGEN_MPI_UNIT_TESTS ... #else

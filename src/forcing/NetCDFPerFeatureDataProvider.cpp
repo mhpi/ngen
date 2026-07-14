@@ -2,6 +2,7 @@
 
 #if NGEN_WITH_NETCDF
 #include "NetCDFPerFeatureDataProvider.hpp"
+#include <mediator/UnitsHelper.hpp>
 
 #include <netcdf>
 
@@ -168,9 +169,12 @@ NetCDFPerFeatureDataProvider::TimeInfo NetCDFPerFeatureDataProvider::get_time_me
     return info;
 }
 
-NetCDFPerFeatureDataProvider::NetCDFPerFeatureDataProvider(std::string input_path, time_t sim_start, time_t sim_end,  utils::StreamHandler log_s) : log_stream(log_s), value_cache(N_EXPECTED_FORCING_VARS),
-    sim_start_date_time_epoch(sim_start),
-    sim_end_date_time_epoch(sim_end)
+NetCDFPerFeatureDataProvider::NetCDFPerFeatureDataProvider(std::string input_path, time_t sim_start, time_t sim_end, utils::StreamHandler log_s)
+    : log_stream(log_s)
+    , file_path(input_path)
+    , value_cache(N_EXPECTED_FORCING_VARS)
+    , sim_start_date_time_epoch(sim_start)
+    , sim_end_date_time_epoch(sim_end)
 {
     //size_t sizep = 1073741824, nelemsp = 202481;
     //float preemptionp = 0.75;
@@ -640,12 +644,11 @@ double NetCDFPerFeatureDataProvider::get_value(const CatchmentAggrDataSelector& 
     {
         return UnitsHelper::get_converted_value(native_units, rvalue, selector.get_output_units());
     }
-    catch (const std::runtime_error& e)
+    catch (UnitsHelper::unit_conversion_exception& uce)
     {
-        #ifndef UDUNITS_QUIET
-        std::cerr<<"WARN: Unit conversion unsuccessful - Returning unconverted value! (\""<<e.what()<<"\")"<<std::endl;
-        #endif
-        return rvalue;
+        uce.provider_model_name = "NetCDFPerFeatureDataProvider(" + file_path + ")";
+        uce.provider_var_name = selector.get_variable_name();
+        throw;
     }
 
     return rvalue;
