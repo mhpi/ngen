@@ -353,7 +353,14 @@ namespace realization {
             return modules[get_index_for_primary_module()]->get_data_start_time();
         }
 
-        std::string get_output_line_for_timestep(int timestep, std::string delimiter) override;
+        std::vector<double> get_output_values_for_timestep(int timestep) override;
+
+        /**
+         * Get this formulation's output fields (header name + units) in output order. The units come
+         * from the submodule that produces each variable -- the same source its value comes from --
+         * by reusing the submodules' own output fields.
+         */
+        std::vector<utils::OutputField> get_output_fields() const override;
 
         double get_response(time_step_t t_index, time_step_t t_delta) override;
 
@@ -599,6 +606,17 @@ namespace realization {
             // Since this is a nested formulation, support usage of the '{{id}}' syntax for init config file paths.
             Catchment_Formulation::config_pattern_substitution(properties, BMI_REALIZATION_CFG_PARAM_REQ__INIT_CONFIG,
                                                                "{{id}}", id);
+
+            // Inject a three-part compound identity on the submodule BEFORE
+            // create_formulation runs, so that compound_id() is fully qualified
+            // during submodule construction with the following structure:
+            // "<catchment.submodule_index>:<submodule-mtn>:<multi-mtn>"
+            // Peek the submodule's own model_type_name from the config map —
+            // we cannot wait for create_formulation() to populate it on
+            // the submodule because we need the compound in place first.
+            std::string submodule_mtn =
+                properties.at(BMI_REALIZATION_CFG_PARAM_REQ__MODEL_TYPE).as_string();
+            mod->set_compound_id(identifier + ":" + submodule_mtn + ":" + get_model_type_name());
 
             // Call create_formulation to perform the rest of the typical initialization steps for the formulation.
             mod->create_formulation(properties);

@@ -7,13 +7,19 @@
 #endif
 
 void ngen::SurfaceLayer::update_models(boost::span<double> catchment_outflows, 
-                                       std::unordered_map<std::string, int> &catchment_indexes,
+                                       std::unordered_map<std::string, int> const& catchment_indexes,
                                        boost::span<double> nexus_downstream_flows,
-                                       std::unordered_map<std::string, int> &nexus_indexes,
+                                       std::unordered_map<std::string, int> const& nexus_indexes,
                                        int current_step)
 {
     long current_time_index = output_time_index;
     
+    // Grab time details (but only once since the output_time_index doesn't (and shouldn't) change
+    std::string current_timestamp = simulation_time.get_timestamp(current_time_index);
+    time_t current_date_time_epoch = simulation_time.get_current_epoch_time();
+
+    utils::time_marker current_time_marker(current_time_index, current_date_time_epoch, current_timestamp);
+
     Layer::update_models(catchment_outflows, catchment_indexes, nexus_downstream_flows, nexus_indexes, current_step);
 
     // On the first time step, check all the nexuses and warn user about ones have no contributing catchments
@@ -31,13 +37,6 @@ void ngen::SurfaceLayer::update_models(boost::span<double> catchment_outflows,
             }
         }
     }
-
-    // Grab time details (but only once since the output_time_index doesn' (and shouldn't) change
-    std::string current_timestamp = simulation_time.get_timestamp(current_time_index);
-    // Remember: above call to simulation_time.get_timestamp(current_time_index) has to be made first (see those funcs)
-    time_t current_date_time_epoch = simulation_time.get_current_epoch_time();
-
-    utils::time_marker current_time_marker(current_time_index, current_date_time_epoch, current_timestamp);
 
     // Once contributing catchments are updated for this timestep, dump the nexus output
     for(const auto& id : features.nexuses()) 
@@ -65,15 +64,19 @@ void ngen::SurfaceLayer::update_models(boost::span<double> catchment_outflows,
         double contribution_at_t = features.nexus_at(id)->get_downstream_flow(cat_id, current_time_index, 100.0);
 
 #if NGEN_WITH_ROUTING && NGEN_WITH_ROUTING_TROUTE_BMI
-        int nexus_index = nexus_indexes[id];
+        int nexus_index = nexus_indexes.at(id);
         nexus_downstream_flows[nexus_index] += contribution_at_t;
 #endif // NGEN_WITH_ROUTING && NGEN_WITH_ROUTING_TROUTE_BMI
 
         // TODO: (later) eventually may want to use this form, if we support multiple formulations per catchment
         //nexus_outputs_mgr->receive_data_entry(form_id, id, current_time_index, current_timestamp, contribution_at_t);
-        nexus_outputs_mgr->receive_data_entry(id, current_time_marker, contribution_at_t);
+        if (nexus_outputs_mgr) {
+            nexus_outputs_mgr->receive_data_entry(id, current_time_marker, contribution_at_t);
+        }
 
         //std::cout<<"\tNexus "<<id<<" has "<<contribution_at_t<<" m^3/s"<<std::endl;
     } //done nexuses
-    nexus_outputs_mgr->commit_writes();
+    if (nexus_outputs_mgr) {
+        nexus_outputs_mgr->commit_writes();
+    }
 }

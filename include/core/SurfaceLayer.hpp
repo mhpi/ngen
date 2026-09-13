@@ -17,8 +17,9 @@ namespace ngen
                 feature_type& f, 
                 geojson::GeoJSON cd, 
                 long idx,
-                const std::shared_ptr<utils::NexusOutputsMgr> &nexus_outputs_mgr) :
-                    Layer(desc,p_u,s_t,f,cd,idx), 
+                const std::shared_ptr<utils::NexusOutputsMgr> &nexus_outputs_mgr,
+                std::shared_ptr<utils::CatchmentOutputsMgr> catchment_output_mgr) :
+                    Layer(desc,p_u,s_t,f,cd,idx,catchment_output_mgr),
                     nexus_outputs_mgr(nexus_outputs_mgr)
         {
 
@@ -28,9 +29,9 @@ namespace ngen
          * @brief Run one simulation timestep for each model in this layer
         */
         void update_models(boost::span<double> catchment_outflows, 
-                           std::unordered_map<std::string, int> &catchment_indexes,
+                           std::unordered_map<std::string, int> const& catchment_indexes,
                            boost::span<double> nexus_downstream_flows,
-                           std::unordered_map<std::string, int> &nexus_indexes,
+                           std::unordered_map<std::string, int> const& nexus_indexes,
                            int current_step) override;
 
         private:

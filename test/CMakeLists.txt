@@ -66,7 +66,7 @@ endif()
 add_executable(test_all)
 target_link_libraries(test_all PRIVATE gtest gtest_main)
 set_target_properties(test_all PROPERTIES FOLDER test)
-target_include_directories(test_all PRIVATE ${CMAKE_CURRENT_LIST_DIR}/bmi)
+target_include_directories(test_all PRIVATE ${CMAKE_CURRENT_LIST_DIR}/bmi ${NGEN_ROOT_DIR}/include)
 
 # =============================================================================
 
@@ -110,6 +110,7 @@ function(ngen_add_test TESTNAME)
 
     if(NGEN_TEST_CREATE)
         add_executable(${TESTNAME} ${NGEN_TEST_OBJECTS})
+        target_include_directories(${TESTNAME} PRIVATE ${NGEN_ROOT_DIR}/include)
         target_include_directories(${TESTNAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/bmi)
         target_link_libraries(${TESTNAME} PRIVATE gtest gtest_main ${NGEN_TEST_LIBRARIES})
         set_target_properties(${TESTNAME} PROPERTIES FOLDER test)
@@ -168,12 +169,15 @@ ngen_add_test(
     test_realization_config
     OBJECTS
         realizations/Formulation_Manager_Test.cpp
+        realizations/config/Output_Test.cpp
+        realizations/config/CatchmentOutput_Test.cpp
     LIBRARIES
         NGen::core
         NGen::realizations_catchment
         NGen::core_mediator
         NGen::forcing
         NGen::ngen_bmi
+        NGen::output
     DEPENDS
         testbmicppmodel
 )
@@ -229,20 +233,6 @@ ngen_add_test(
         testbmicppmodel
 )
 
-########################## Series Unit Tests
-ngen_add_test(
-    test_mdarray
-    OBJECTS
-        utils/mdarray_Test.cpp
-        utils/mdframe_Test.cpp
-        utils/mdframe_netcdf_Test.cpp
-        utils/mdframe_csv_Test.cpp
-    LIBRARIES
-        NGen::mdarray
-        NGen::mdframe
-        
-)
-
 ########################## Logging Unit Tests
 ngen_add_test(
     test_logging
@@ -260,6 +250,24 @@ ngen_add_test(
         core/nexus/NexusTests.cpp
     LIBRARIES
         NGen::core_nexus
+)
+
+########################## Nexus CSV Output Manager Tests
+ngen_add_test(
+    test_nexus_output
+    OBJECTS
+        utilities/output/PerNexusCsvOutputMgr_Test.cpp
+    LIBRARIES
+        NGen::output
+)
+
+########################## Catchment CSV Output Manager Tests
+ngen_add_test(
+    test_catchment_output_mgr
+    OBJECTS
+        utilities/output/CatchmentCsvOutputMgr_Test.cpp
+    LIBRARIES
+        NGen::output
 )
 
 ########################## MPI Remote Nexus Tests
@@ -358,6 +366,7 @@ ngen_add_test(
         bmi/Bmi_Cpp_Adapter_Test.cpp
         realizations/catchments/Bmi_Cpp_Formulation_Test.cpp
     LIBRARIES
+        gmock
         NGen::core
         NGen::realizations_catchment
         NGen::core_mediator
@@ -393,6 +402,7 @@ ngen_add_test(
         bmi/Bmi_Fortran_Adapter_Test.cpp
         realizations/catchments/Bmi_Fortran_Formulation_Test.cpp
     LIBRARIES
+        gmock
         NGen::core
         NGen::realizations_catchment
         NGen::core_mediator
@@ -412,6 +422,7 @@ ngen_add_test(
         realizations/catchments/Bmi_Py_Formulation_Test.cpp
         utils/python/InterpreterUtil_Test.cpp
     LIBRARIES
+        gmock
         NGen::core
         NGen::realizations_catchment
         NGen::core_mediator
@@ -428,6 +439,7 @@ ngen_add_test(
         realizations/catchments/Bmi_Multi_Formulation_Test.cpp
         realizations/catchments/Bmi_Cpp_Multi_Array_Test.cpp
     LIBRARIES
+        gmock
         NGen::core
         NGen::realizations_catchment
         NGen::core_mediator
@@ -551,10 +563,6 @@ ngen_add_test(
         realizations/Formulation_Manager_Test.cpp
         utils/PerFormulationNexusOutputMgr_Test.cpp
         utils/Partition_Test.cpp
-        utils/mdarray_Test.cpp
-        utils/mdframe_Test.cpp
-        utils/mdframe_netcdf_Test.cpp
-        utils/mdframe_csv_Test.cpp
         utils/logging_Test.cpp
     LIBRARIES
         gmock
@@ -564,8 +572,6 @@ ngen_add_test(
         NGen::forcing
         NGen::geojson
         NGen::realizations_catchment
-        NGen::mdarray
-        NGen::mdframe
         NGen::logging
         NGen::ngen_bmi
         NGen::output

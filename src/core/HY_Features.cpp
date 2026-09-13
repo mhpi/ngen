@@ -34,16 +34,6 @@ HY_Features::HY_Features(network::Network network, std::shared_ptr<Formulation_M
           //Find and prepare formulation
           auto formulation = formulations->get_formulation(feat_id);
 
-          if (!formulations->is_disable_catchment_output()) {
-            formulation->set_output_stream(formulations->get_output_root() + feat_id + ".csv");
-          } else {
-            // Route to the null sink so disabled catchment output is discarded, not dumped to stdout
-            formulation->set_output_stream("");
-          }
-
-          // TODO: add command line or config option to have this be omitted
-          //FIXME why isn't default param working here??? get_output_header_line() fails.
-          formulation->write_output("Time Step,""Time,"+formulation->get_output_header_line(",")+"\n");
           //Find upstream nexus ids
           origins = network.get_origination_ids(feat_id);
 
@@ -68,7 +58,7 @@ HY_Features::HY_Features(network::Network network, std::shared_ptr<Formulation_M
         {
             origins = network.get_origination_ids(feat_id);
             _nexuses.emplace(feat_id, std::make_unique<HY_PointHydroNexus>(
-                                          HY_PointHydroNexus(feat_id, destinations, origins) ));
+                                          feat_id, destinations, origins ));
         }
         else
         {

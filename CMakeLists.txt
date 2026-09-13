@@ -112,7 +112,7 @@ endif()
 
 # -----------------------------------------------------------------------------
 # Set global C++ options
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
@@ -338,8 +338,6 @@ add_subdirectory("src/bmi")
 add_subdirectory("src/realizations/catchment")
 add_subdirectory("src/forcing")
 add_subdirectory("src/utilities")
-add_subdirectory("src/utilities/mdarray")
-add_subdirectory("src/utilities/mdframe")
 add_subdirectory("src/utilities/logging")
 add_subdirectory("src/utilities/bmi")
 add_subdirectory("src/utilities/output")

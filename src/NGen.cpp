@@ -55,9 +55,15 @@
 #include <DomainLayer.hpp>
 #include "utilities/output/NexusOutputsMgr.hpp"
 #include "utilities/output/PerNexusCsvOutputMgr.hpp"
+#include "utilities/output/CatchmentOutputsMgr.hpp"
+#include "realizations/config/catchment_output.hpp"
 #if NGEN_WITH_NETCDF
 #include "utilities/output/PerFormulationNexusOutputMgr.hpp"
 #endif
+
+#include "utilities/JSON_Reader.hpp"
+
+#include <mediator/UnitsHelper.hpp>
 
 void ngen::exec_info::runtime_summary(std::ostream& stream) noexcept
 {
@@ -350,7 +356,7 @@ int main(int argc, char* argv[]) {
     #if NGEN_WITH_MPI
     PartitionData local_data;
     if (mpi_num_procs > 1) {
-        Partitions_Parser partition_parser(PARTITION_PATH);
+        Partitions_Parser partition_parser(ptree_from_json_file(PARTITION_PATH));
         // TODO: add something here to make sure this step worked for every rank, and maybe to checksum the file
         partition_parser.parse_partition_file();
 
@@ -409,8 +415,7 @@ int main(int argc, char* argv[]) {
     //to map features to their primary id as well as the alternative property
     nexus_collection->update_ids("id");
 
-    boost::property_tree::ptree realization_config;
-    boost::property_tree::json_parser::read_json(REALIZATION_CONFIG_PATH, realization_config);
+    boost::property_tree::ptree realization_config = ptree_from_json_file(REALIZATION_CONFIG_PATH);
 
     std::shared_ptr<Simulation_Time> sim_time;
 
@@ -461,6 +466,45 @@ int main(int argc, char* argv[]) {
 
     //validate dendritic connections
     features.validate_dendritic();
+
+    // Build the catchment output manager now that the features (and their formulations) exist: gather
+    // every catchment's output columns, then construct the manager with the full set up front. 
+    // Under MPI each rank's files go in a rank_<N>/ subdirectory when the domain requests it,
+    // or always for per_formulation (so ranks never share a file) -- resolved once into the root here.
+    std::shared_ptr<utils::CatchmentOutputsMgr> catchment_outputs_mgr;
+    std::shared_ptr<utils::CatchmentOutputsMgr> domain_outputs_mgr;
+    const auto& catchment_output = manager->get_output_config().catchment;
+    if (catchment_output.enable) {
+        std::vector<utils::FeatureDescriptor> descriptors;
+        for (const auto& id : features.catchments()) {
+            descriptors.emplace_back(id, manager->get_formulation(id)->get_output_fields());
+        }
+        realization::config::Output cat_config = manager->get_output_config();
+        cat_config.root = realization::config::rank_output_root(
+            cat_config.root, cat_config.catchment, mpi_rank, mpi_num_procs);
+        catchment_outputs_mgr = realization::config::make_catchment_output_mgr(
+            cat_config, std::move(descriptors));
+    }
+
+    //A domain formulation is domain-wide and runs
+    // identically on every rank, so writing it once here avoids N redundant per-rank copies; the root
+    // is not rank-scoped (single writer). Each domain layer is its own feature
+    // ("layer_<id>", layer name), landing under "<root>/layer_<id>/".
+    if (catchment_output.enable && mpi_rank == 0) {
+        std::vector<utils::FeatureDescriptor> descriptors;
+        auto& layer_meta = manager->get_layer_metadata();
+        for (int layer_key : layer_meta.get_keys()) {
+            if (manager->has_domain_formulation(layer_key)) {
+                const auto& layer_desc = layer_meta.get_layer(layer_key);
+                descriptors.emplace_back("layer_" + std::to_string(layer_desc.id), layer_desc.name,
+                                         manager->get_domain_formulation(layer_key)->get_output_fields());
+            }
+        }
+        if (!descriptors.empty()) {
+            domain_outputs_mgr = realization::config::make_catchment_output_mgr(
+                manager->get_output_config(), std::move(descriptors));
+        }
+    }
     // TODO don't really need catchment_collection once catchments are added to nexus collection
     // Still using  catchments for geometry at the moment, fix this later
     // catchment_collection.reset();
@@ -482,6 +526,13 @@ int main(int argc, char* argv[]) {
     nexus_collection.reset();
 
     std::shared_ptr<utils::NexusOutputsMgr> nexus_outputs_mgr;
+    const auto& nexus_output = manager->get_output_config().nexus;
+    // Routing consumes nexus output, so a routing run with nexus output disabled cannot work.
+    if (manager->get_using_routing() && !nexus_output.enable) {
+        throw std::runtime_error(
+            "Routing is enabled but nexus output is disabled (output.nexus.enable = false); "
+            "the routing run has no nexus output to consume.");
+    }
     #if NGEN_WITH_MPI
     std::vector<std::string> nexus_ids;
     std::copy_if(features.nexuses().begin(), features.nexuses().end(), std::back_inserter(nexus_ids),
@@ -494,7 +545,7 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> nexus_ids(features.nexuses().begin(), features.nexuses().end());
     #endif
 
-    if (manager->is_using_per_formulation_nexus_files()) {
+    if (nexus_output.enable && nexus_output.format == realization::config::OutputFormat::netcdf) {
         // TODO: (later) use nullptr for now, until full support for multiple formulations per catchment is available
         std::shared_ptr<std::vector<std::string>> formulation_ids = nullptr;
 
@@ -515,7 +566,7 @@ int main(int argc, char* argv[]) {
         MPI_Bcast(&total_nexus_count, 1, MPI_INT, mpi_num_procs - 1, MPI_COMM_WORLD);
 
         #if NGEN_WITH_NETCDF
-        nexus_outputs_mgr = std::make_shared<utils::PerFormulationNexusOutputMgr>(nexus_ids, formulation_ids, manager->get_output_root(), timesteps, mpi_rank, local_nexus_write_offset, mpi_num_procs, total_nexus_count);
+        nexus_outputs_mgr = std::make_shared<utils::PerFormulationNexusOutputMgr>(nexus_ids, formulation_ids, manager->get_output_config().root, timesteps, mpi_rank, local_nexus_write_offset, mpi_num_procs, total_nexus_count);
         #else
         throw std::runtime_error("NetCDF support required to use per-formulation nexus files.");
         #endif
@@ -524,16 +575,22 @@ int main(int argc, char* argv[]) {
         MPI_Barrier(MPI_COMM_WORLD);
         #else
         #if NGEN_WITH_NETCDF
-        nexus_outputs_mgr = std::make_shared<utils::PerFormulationNexusOutputMgr>(nexus_ids, formulation_ids, manager->get_output_root(), timesteps);
+        nexus_outputs_mgr = std::make_shared<utils::PerFormulationNexusOutputMgr>(nexus_ids, formulation_ids, manager->get_output_config().root, timesteps);
         #else
         throw std::runtime_error("NetCDF support required to use per-formulation nexus files.");
         #endif
 
         #endif
     }
-    else {
-        nexus_outputs_mgr = std::make_shared<utils::PerNexusCsvOutputMgr>(nexus_ids, manager->get_output_root());
+    else if (nexus_output.enable && nexus_output.format == realization::config::OutputFormat::csv) {
+        // CSV nexus output: one file per nexus. Under MPI, when the domain sets rank_subdir, each
+        // rank's files go in a rank_<N>/ subdirectory to cut filesystem contention from many ranks
+        // sharing a directory. Resolved once into the root here (same helper as catchment output).
+        const std::string nexus_root = realization::config::rank_output_root(
+            manager->get_output_config().root, nexus_output, mpi_rank, mpi_num_procs);
+        nexus_outputs_mgr = std::make_shared<utils::PerNexusCsvOutputMgr>(nexus_ids, nexus_root);
     }
+    // else: nexus output disabled -- nexus_outputs_mgr stays null.
 
     std::cout<<"Running Models"<<std::endl;
 
@@ -570,7 +627,8 @@ int main(int argc, char* argv[]) {
             // create a domain wide layer
             auto formulation = manager->get_domain_formulation(keys[i]);
             layers[i] =
-                std::make_shared<ngen::DomainLayer>(desc, layer_sim_time, features, 0, formulation);
+                std::make_shared<ngen::DomainLayer>(desc, layer_sim_time, features, 0, formulation,
+                                                    domain_outputs_mgr);
         } else {
             for (std::string id : features.catchments(keys[i])) {
                 cat_ids.push_back(id);
@@ -582,7 +640,8 @@ int main(int argc, char* argv[]) {
                     layer_sim_time,
                     features,
                     catchment_collection,
-                    0
+                    0,
+                    catchment_outputs_mgr
                 );
             } else {
                 layers[i] = std::make_shared<ngen::SurfaceLayer>(
@@ -592,7 +651,8 @@ int main(int argc, char* argv[]) {
                     features,
                     catchment_collection,
                     0,
-                    nexus_outputs_mgr
+                    nexus_outputs_mgr,
+                    catchment_outputs_mgr
                 );
             }
         }
@@ -621,8 +681,17 @@ int main(int argc, char* argv[]) {
 
     simulation->run_catchments();
 
-    // Close nexus output file(s)
-    nexus_outputs_mgr->close();
+    // Close output file(s). close() flushes and commits everything received, so no separate
+    // end-of-run commit_writes() is needed (writes buffer normally during the run).
+    if (nexus_outputs_mgr) {
+        nexus_outputs_mgr->close();
+    }
+    if (catchment_outputs_mgr) {
+        catchment_outputs_mgr->close();
+    }
+    if (domain_outputs_mgr) {
+        domain_outputs_mgr->close();
+    }
 
 #if NGEN_WITH_MPI
     MPI_Barrier(MPI_COMM_WORLD);
