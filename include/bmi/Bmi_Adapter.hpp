@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "bmi.hpp"
+#include "utilities/bmi_primitive_type.hpp"
 
 namespace models {
     namespace bmi {
@@ -63,25 +64,26 @@ namespace models {
             double convert_seconds_to_model_time(const double& seconds_val);
 
             /**
-             * Get the name string for the C++ type analogous to the described type in the backing model.
+             * Resolve a type name the backing model reports to a @ref models::bmi::primitive_type.
              *
-             * The supported languages for BMI modules support different types than C++ in general, but it is necessary
-             * to map "external" types to the appropriate C++ type for certain interactions; e.g., setting a variable
-             * value.  This function encapsulates the translation specific to the particular language.
+             * Most languages need nothing more than the table of spellings: it carries the C and C++
+             * keyword spellings and the Fortran ones alike, so the default parses the name as reported.
              *
-             * Note that the size of an individual item is also required, as this can vary in certain situations
-             * depending on the implementation language of a backing model.
+             * The exception is a language whose type names do not determine a type. A Python model reports
+             * "int" for any width, so the name alone cannot be resolved and the item size has to settle it.
+             * That is what an override is for, and why the size is a parameter here.
              *
-             * Implementations should all throw the same type of exception (currently, @ref std::runtime_error) if/when
-             * an unrecognized external type name parameter is provided.
+             * Callers should check the result against the item size, as models::bmi::resolve_var_type does.
              *
-             * @param external_type_name The string name of some type in backing model's implementation language.
-             * @param item_size The particular size in bytes for items of the involved analogous types.
-             * @return The name string for the C++ type analogous to the described type in the backing model.
-             * @throw std::runtime_error If an unrecognized external type name parameter is provided.
+             * @param external_type_name The string name of some type in the backing model's language.
+             * @param item_size The size in bytes of one item, where the name alone does not imply it.
+             * @return The primitive type the name denotes.
+             * @throw unknown_bmi_type If the name is not one the table knows.
+             * @throw std::runtime_error If an override cannot resolve the name and size it is given.
              */
-            virtual const std::string get_analogous_cxx_type(const std::string &external_type_name,
-                                                             const size_t item_size) = 0;
+            virtual primitive_type get_primitive_type(std::string_view external_type_name, const size_t item_size) {
+                return parse_bmi_type(external_type_name);
+            }
 
             /**
              * Initialize the wrapped BMI model functionality using the value from the `bmi_init_config` member variable

@@ -19,6 +19,7 @@
 #include "CsvPerFeatureForcingProvider.hpp"
 #include "gtest/gtest.h"
 #include "gmock/gmock.h"
+#include <iomanip>
 #include <iostream>
 #include <vector>
 #include <boost/property_tree/ptree.hpp>
@@ -67,7 +68,7 @@ protected:
     }
 
     static double get_friend_var_value_as_double(Bmi_Fortran_Formulation& formulation, const std::string& var_name) {
-        return formulation.get_var_value_as_double(0, var_name);
+        return models::bmi::GetValue<double>(*formulation.get_bmi_model(), var_name, 0);
     }
 
     static time_t parse_forcing_time(const std::string& date_time_str) {
@@ -194,7 +195,6 @@ void Bmi_Fortran_Formulation_Test::SetUp() {
                          "                \"library_file\": \"" + lib_file[i] + "\","
                          "                \"init_config\": \"" + init_config[i] + "\","
                          "                \"main_output_variable\": \"" + main_output_variable[i] + "\","
-                         "                \"" + BMI_REALIZATION_CFG_PARAM_OPT__OUTPUT_PRECISION + "\": 6, "
                          "                \"" + BMI_REALIZATION_CFG_PARAM_OPT__VAR_STD_NAMES + "\": { "
                          "                      \"INPUT_VAR_3\": \"" + AORC_FIELD_NAME_PRESSURE_SURFACE + "\","
                          "                      \"INPUT_VAR_2\": \"" + AORC_FIELD_NAME_SPEC_HUMID_2M_AG + "\","
@@ -229,7 +229,7 @@ TEST_F(Bmi_Fortran_Formulation_Test, Initialize_0_a) {
 
     auto fp = std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]);
 
-    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::move(fp), utils::StreamHandler());
+    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::move(fp));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     ASSERT_EQ(get_friend_model_type_name(formulation), model_type_name[ex_index]);
@@ -239,10 +239,10 @@ TEST_F(Bmi_Fortran_Formulation_Test, Initialize_0_a) {
 
 /** Test to make sure we can initialize multiple model instances with dynamic loading. */
 TEST_F(Bmi_Fortran_Formulation_Test, Initialize_1_a) {
-    Bmi_Fortran_Formulation form_1(catchment_ids[0], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[0]), utils::StreamHandler());
+    Bmi_Fortran_Formulation form_1(catchment_ids[0], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[0]));
     form_1.create_formulation(config_prop_ptree[0]);
 
-    Bmi_Fortran_Formulation form_2(catchment_ids[1], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[1]), utils::StreamHandler());
+    Bmi_Fortran_Formulation form_2(catchment_ids[1], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[1]));
     form_2.create_formulation(config_prop_ptree[1]);
 
     std::vector<std::string> header_1, header_2;
@@ -257,7 +257,7 @@ TEST_F(Bmi_Fortran_Formulation_Test, Initialize_1_a) {
 TEST_F(Bmi_Fortran_Formulation_Test, GetResponse_0_a) {
     int ex_index = 0;
 
-    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     double response = formulation.get_response(0, 3600);
@@ -268,7 +268,7 @@ TEST_F(Bmi_Fortran_Formulation_Test, GetResponse_0_a) {
 TEST_F(Bmi_Fortran_Formulation_Test, GetResponse_0_b) {
     int ex_index = 0;
 
-    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     double response;
@@ -281,10 +281,10 @@ TEST_F(Bmi_Fortran_Formulation_Test, GetResponse_0_b) {
 
 /** Test to make sure we can execute multiple model instances with dynamic loading. */
 TEST_F(Bmi_Fortran_Formulation_Test, GetResponse_1_a) {
-    Bmi_Fortran_Formulation form_1(catchment_ids[0], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[0]), utils::StreamHandler());
+    Bmi_Fortran_Formulation form_1(catchment_ids[0], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[0]));
     form_1.create_formulation(config_prop_ptree[0]);
 
-    Bmi_Fortran_Formulation form_2(catchment_ids[1], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[0]), utils::StreamHandler());
+    Bmi_Fortran_Formulation form_2(catchment_ids[1], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[0]));
     form_2.create_formulation(config_prop_ptree[1]);
 
     double response_1, response_2;
@@ -300,7 +300,7 @@ TEST_F(Bmi_Fortran_Formulation_Test, GetResponse_1_a) {
 TEST_F(Bmi_Fortran_Formulation_Test, GetOutputLineForTimestep_0_a) {
     int ex_index = 0;
 
-    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
     //Init the test grids
     std::shared_ptr<models::bmi::Bmi_Fortran_Adapter> model_adapter = get_friend_bmi_model(formulation);
@@ -315,11 +315,32 @@ TEST_F(Bmi_Fortran_Formulation_Test, GetOutputLineForTimestep_0_a) {
     EXPECT_THAT(output, ::testing::Pointwise(::testing::DoubleNear(1e-15), std::vector<double>{0.0, 0.018600000068545341, 0.0, 2.0, 10.0, 10.0}));
 }
 
+/** Test that a 'real' the module reports as 8 bytes wide is read as a double at full width, not through a float. */
+TEST_F(Bmi_Fortran_Formulation_Test, get_var_value_as_double_widened_real_0_a) {
+    int ex_index = 0;
+
+    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
+    formulation.create_formulation(config_prop_ptree[ex_index]);
+    std::shared_ptr<models::bmi::Bmi_Fortran_Adapter> model_adapter = get_friend_bmi_model(formulation);
+
+    const std::string name = "test::real_kind8";
+    ASSERT_EQ(model_adapter->GetVarType(name), "real");
+    ASSERT_EQ(model_adapter->GetVarItemsize(name), 8);
+
+    // Not representable as a float, so reading through one would change it.
+    double value = 1.000000000001;
+    ASSERT_NE(static_cast<double>(static_cast<float>(value)), value);
+    model_adapter->SetValue(name, &value);
+
+    const double read = get_friend_var_value_as_double(formulation, name);
+    EXPECT_EQ(read, value) << std::setprecision(17) << "read back " << read << ", set " << value;
+}
+
 /** Simple test of output with modified variables. */
 TEST_F(Bmi_Fortran_Formulation_Test, GetOutputLineForTimestep_1_a) {
     int ex_index = 1;
 
-    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     double response = formulation.get_response(0, 3600);
@@ -332,7 +353,7 @@ TEST_F(Bmi_Fortran_Formulation_Test, GetOutputLineForTimestep_1_a) {
 TEST_F(Bmi_Fortran_Formulation_Test, GetOutputLineForTimestep_1_b) {
     int ex_index = 1;
 
-    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     int i = 0;
@@ -347,7 +368,7 @@ TEST_F(Bmi_Fortran_Formulation_Test, GetOutputLineForTimestep_1_b) {
 TEST_F(Bmi_Fortran_Formulation_Test, determine_model_time_offset_0_a) {
     int ex_index = 0;
 
-    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
     std::shared_ptr<models::bmi::Bmi_Fortran_Adapter> model_adapter = get_friend_bmi_model(formulation);
 
@@ -358,7 +379,7 @@ TEST_F(Bmi_Fortran_Formulation_Test, determine_model_time_offset_0_a) {
 TEST_F(Bmi_Fortran_Formulation_Test, determine_model_time_offset_0_b) {
     int ex_index = 0;
 
-    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
     std::shared_ptr<models::bmi::Bmi_Fortran_Adapter> model_adapter = get_friend_bmi_model(formulation);
     time_t forcing_start = get_friend_forcing_start_time(formulation);
@@ -369,7 +390,7 @@ TEST_F(Bmi_Fortran_Formulation_Test, determine_model_time_offset_0_b) {
 TEST_F(Bmi_Fortran_Formulation_Test, determine_model_time_offset_0_c) {
     int ex_index = 0;
 
-    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_Fortran_Formulation formulation(catchment_ids[ex_index], std::make_unique<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
     std::shared_ptr<models::bmi::Bmi_Fortran_Adapter> model_adapter = get_friend_bmi_model(formulation);
 

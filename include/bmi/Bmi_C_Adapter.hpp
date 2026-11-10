@@ -234,30 +234,6 @@ namespace models {
                 return dest;
             }
 
-            /**
-             * Get a reference to the value(s) of a given variable.
-             *
-             * This function gets and returns the reference (i.e., pointer) to the backing model's variable with the
-             * given name.  Unlike what is returned by `GetValue()`, this will point to the current value(s) of the
-             * variable, even if the model's state has changed.
-             *
-             * Because of how C-based BMI models are implemented, raw pointers are returned.  The pointers are "owned"
-             * by the model implementation, though, so there should be no risk of memory leaks (i.e., strictly as a
-             * result of obtaining a reference via this function.)
-             *
-             * @tparam T   The type of the variable to which a reference will be returned.
-             * @param name The name of the variable to which a reference will be returned.
-             * @return A reference to the value(s) of a given variable
-             */
-            template<class T>
-            T *GetValuePtr(const std::string &name) {
-                int nbytes;
-                if (bmi_model->get_var_nbytes(bmi_model.get(), name.c_str(), &nbytes) != BMI_SUCCESS)
-                    throw std::runtime_error(model_name + " failed to get pointer for BMI variable " + name + ".");
-                void *dest = GetValuePtr(name);
-                T *ptr = (T *) dest;
-                return ptr;
-            }
 
             /**
              * Get the size (in bytes) of one item of a variable.
@@ -334,27 +310,6 @@ namespace models {
              */
             int GetGridSize(int grid_id) override;
 
-            /**
-             * Get the name string for the C++ type analogous to the described type in the backing model.
-             *
-             * The supported languages for BMI modules support different types than C++ in general, so it is necessary
-             * to map "external" types to the appropriate C++ type for certain interactions; e.g., setting a variable
-             * value.
-             *
-             * However, for C language models, the types in C can be used directly, so this simply returns the original
-             * string for the external name.
-             *
-             * Note that the size of an individual item is also required, as this can vary in certain situations
-             * depending on the implementation language of a backing model.
-             *
-             * @param external_type_name The string name of some C type.
-             * @param item_size The particular size in bytes for items of the involved analogous types.
-             * @return The name string for the analogous C++ type, which is the same as given arg for C modules.
-             */
-            const std::string
-            get_analogous_cxx_type(const std::string &external_type_name, const size_t item_size) override {
-                return external_type_name;
-            }
 
             /**
              * Whether the backing model has been initialized yet.

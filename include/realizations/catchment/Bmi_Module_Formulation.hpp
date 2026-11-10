@@ -9,6 +9,8 @@
 #include "bmi_utilities.hpp"
 #include "bmi/protocols.hpp"
 
+#include <set>
+
 using data_access::MEAN;
 using data_access::SUM;
 
@@ -29,15 +31,25 @@ namespace realization {
 
         //Bmi_Var_Details() : Bmi_Var_Details("", "", nullptr, -1, -1, "", "") { }
 
-        Bmi_Var_Details(std::string name, std::string alias, const int item_size, const int num_items, std::string cpp_type, std::string units)
-            : name(std::move(name)), mapped_alias(std::move(alias)), cpp_type(std::move(cpp_type)), units(std::move(units)), item_size(item_size), num_items(num_items) { }
+        Bmi_Var_Details(std::string name, std::string alias, const int item_size, const int num_items, models::bmi::primitive_type type, std::string units)
+            : name(std::move(name)), mapped_alias(std::move(alias)), type(type), units(std::move(units)), item_size(item_size), num_items(num_items)
+        {
+            // The buffers built from these details are sized by item_size and addressed as type, so
+            // the two disagreeing is caught once here rather than on every set.
+            if (models::bmi::size_of(this->type) != static_cast<size_t>(item_size)) {
+                throw std::runtime_error("Cannot use variable '" + this->name + "': its type " +
+                                         models::bmi::to_string(this->type) + " is " +
+                                         std::to_string(models::bmi::size_of(this->type)) +
+                                         " bytes, but its items are " + std::to_string(item_size) + " bytes.");
+            }
+        }
 
         Bmi_Var_Details(const Bmi_Var_Details& source) = default;
 
         friend bool operator<(const Bmi_Var_Details& lhs, const Bmi_Var_Details& rhs) {
-            return std::tie(lhs.name, lhs.mapped_alias, lhs.cpp_type, lhs.units, lhs.item_size, lhs.num_items)
+            return std::tie(lhs.name, lhs.mapped_alias, lhs.type, lhs.units, lhs.item_size, lhs.num_items)
                    <
-                   std::tie(rhs.name, rhs.mapped_alias, rhs.cpp_type, rhs.units, rhs.item_size, rhs.num_items);
+                   std::tie(rhs.name, rhs.mapped_alias, rhs.type, rhs.units, rhs.item_size, rhs.num_items);
         }
 
         const std::string& get_name() const {
@@ -48,8 +60,8 @@ namespace realization {
             return mapped_alias;
         }
 
-        const std::string& get_cpp_type() const {
-            return cpp_type;
+        models::bmi::primitive_type get_type() const {
+            return type;
         }
 
         const std::string& get_units() const {
@@ -69,8 +81,8 @@ namespace realization {
         const std::string name;
         /** The framework's configured alias for the variable. */
         const std::string mapped_alias;
-        /** String for the C++ type corresponding to this variable's type. */
-        const std::string cpp_type;
+        /** The type of this variable's items. */
+        const models::bmi::primitive_type type;
         /** String for variable's units. */
         const std::string units;
         /** The size of individual items for this variable. */
@@ -92,10 +104,9 @@ namespace realization {
          *
          * @param id
          * @param forcing_provider
-         * @param output_stream
          */
-        Bmi_Module_Formulation(std::string id, std::shared_ptr<data_access::GenericDataProvider> forcing_provider, utils::StreamHandler output_stream)
-                : Bmi_Formulation(std::move(id), forcing_provider, output_stream) { }
+        Bmi_Module_Formulation(std::string id, std::shared_ptr<data_access::GenericDataProvider> forcing_provider)
+                : Bmi_Formulation(std::move(id), forcing_provider) { }
 
         ~Bmi_Module_Formulation() override = default;
 
@@ -302,25 +313,6 @@ namespace realization {
          */
         double get_value(const CatchmentAggrDataSelector& selector, data_access::ReSampleMethod m) override;
 
-        /**
-         * Get value for some BMI model variable at a specific index.
-         *
-         * Function gets the value for a provided variable, returned from the backing model as an array, and returns the
-         * specific value at the desired index cast as a double type.
-         *
-         * The function makes several assumptions:
-         *
-         *     1. `index` is within array bounds
-         *     2. `var_name` is in the set of valid variable names for the model
-         *     3. the type for output variable allows the value to be cast to a `double` appropriately
-         *
-         * It falls to user (functions) of this function to ensure these assumptions hold before invoking.
-         *
-         * @param index
-         * @param var_name
-         * @return
-         */
-        virtual double get_var_value_as_double(const int& index, const std::string& var_name) = 0;
 
         bool is_bmi_input_variable(const std::string &var_name) const override;
         bool is_bmi_output_variable(const std::string &var_name) const override;
@@ -361,6 +353,19 @@ namespace realization {
             //Create the protocol context, each member is const, and cannot change during the check
             models::bmi::protocols::Context ctx{iteration, total_steps, timestamp, id};
             (void) bmi_protocols.run(models::bmi::protocols::Protocol::MASS_BALANCE, ctx);
+        }
+
+        /** @brief Per-timestep save hook — see Formulation::checkpoint_state.
+         *
+         * Uses `compound_id()` (not raw `id`) for the Context so records land
+         * in the shared checkpoint file keyed by the full engine-level
+         * identity — single-BMI formulations tag with
+         * `<catchment>:<model_type_name>`, multi submodules with the
+         * three-part compound injected during submodule construction.
+         */
+        void checkpoint_state(const int& iteration, const int& total_steps, const std::string& timestamp) const override {
+            models::bmi::protocols::Context ctx{iteration, total_steps, timestamp, compound_id()};
+            (void) bmi_protocols.run(models::bmi::protocols::Protocol::SERIALIZATION, ctx);
         }
 
     protected:
@@ -601,7 +606,6 @@ namespace realization {
                 BMI_REALIZATION_CFG_PARAM_OPT__VAR_STD_NAMES,
                 BMI_REALIZATION_CFG_PARAM_OPT__OUT_VARS,
                 BMI_REALIZATION_CFG_PARAM_OPT__OUT_HEADER_FIELDS,
-                BMI_REALIZATION_CFG_PARAM_OPT__OUTPUT_PRECISION,
                 BMI_REALIZATION_CFG_PARAM_OPT__ALLOW_EXCEED_END,
                 BMI_REALIZATION_CFG_PARAM_OPT__FIXED_TIME_STEP,
                 BMI_REALIZATION_CFG_PARAM_OPT__LIB_FILE

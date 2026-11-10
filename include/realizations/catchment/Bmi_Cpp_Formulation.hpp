@@ -14,7 +14,7 @@ namespace realization {
 
     public:
 
-        Bmi_Cpp_Formulation(std::string id, std::shared_ptr<data_access::GenericDataProvider> forcing_provider, utils::StreamHandler output_stream);
+        Bmi_Cpp_Formulation(std::string id, std::shared_ptr<data_access::GenericDataProvider> forcing_provider);
 
         std::string get_formulation_type() const override;
 
@@ -35,8 +35,6 @@ namespace realization {
             std::vector<O> outputs = models::bmi::GetValue<O>(*get_bmi_model(), var_name);
             return (T) outputs[t_index];
         }
-
-        double get_var_value_as_double(const int& index, const std::string& var_name) override;
 
         bool is_model_initialized() const override;
 

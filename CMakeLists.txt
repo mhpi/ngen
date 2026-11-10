@@ -51,6 +51,7 @@ option(NGEN_WITH_BMI_FORTRAN "Build with Fortran BMI support"     OFF)
 option(NGEN_WITH_BMI_C       "Build with C BMI support"           ON)
 option(NGEN_WITH_PYTHON      "Build with embedded Python support" ON)
 option(NGEN_WITH_TESTS       "Build with unit tests"              ON)
+option(NGEN_WITH_OPENMP      "Build with OpenMP parallelism"      OFF)
 option(NGEN_QUIET            "Silence output"                     OFF)
 
 # These options require dependency on some of the above options
@@ -117,7 +118,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 # Define project version and use via generated config header
-project(ngen VERSION 0.3.0)
+project(ngen VERSION 0.3.0 LANGUAGES CXX)
+
+if(NGEN_WITH_BMI_FORTRAN)
+    enable_language("Fortran")
+endif()
 
 add_executable(ngen "${NGEN_SRC_DIR}/NGen.cpp")
 
@@ -151,6 +156,23 @@ endif()
 # https://www.intel.com/content/www/us/en/develop/documentation/oneapi-dpcpp-cpp-compiler-dev-guide-and-reference/top/compiler-setup/use-the-command-line/use-cmake-with-the-compiler.html
 if(INTEL_DPCPP)
     find_package(IntelDPCPP REQUIRED)
+endif()
+
+if(NGEN_WITH_OPENMP)
+    find_package(OpenMP REQUIRED)
+    add_compile_definitions(NGEN_WITH_OPENMP)
+    # Workaround globally for CMake bug #21818 that it will not automatically add the linking flags
+    add_link_options(-fopenmp)
+
+    if(NGEN_WITH_MPI)
+        message(FATAL_ERROR "OpenMP threading and MPI are currently incompatible")
+    endif()
+
+    if(NGEN_WITH_BMI_FORTRAN)
+      if(NOT ${CMAKE_Fortran_COMPILER_ID} STREQUAL "GNU")
+        message(FATAL_ERROR "NGen OpenMP support with Fortran modules requires the GNU compiler to enable concurrent init_config file access")
+      endif()
+    endif()
 endif()
 
 # -----------------------------------------------------------------------------
@@ -339,6 +361,8 @@ add_subdirectory("src/realizations/catchment")
 add_subdirectory("src/forcing")
 add_subdirectory("src/utilities")
 add_subdirectory("src/utilities/logging")
+add_subdirectory("src/utilities/path_tokens")
+add_subdirectory("src/utilities/serialization")
 add_subdirectory("src/utilities/bmi")
 add_subdirectory("src/utilities/output")
 add_subdirectory("src/utilities/python")
@@ -368,9 +392,17 @@ if(NGEN_WITH_SQLITE)
     target_link_libraries(ngen PUBLIC NGen::geopackage)
 endif()
 
+# Added after src/geopackage so the GeoPackage hydrofabric implementation can link against it.
+add_subdirectory("src/hydrofabric")
+target_link_libraries(ngen PUBLIC NGen::hydrofabric)
+
 if(NGEN_WITH_ROUTING)
     add_subdirectory("src/routing")
     target_link_libraries(ngen PUBLIC NGen::routing)
+endif()
+
+if(NGEN_WITH_OPENMP)
+    target_link_libraries(ngen PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
 add_executable(partitionGenerator src/partitionGenerator.cpp)
@@ -379,7 +411,7 @@ if(NGEN_WITH_SQLITE)
     target_include_directories(partitionGenerator PUBLIC AFTER "${NGEN_INC_DIR}/geopackage")
 endif()
 
-target_link_libraries(partitionGenerator PUBLIC NGen::core NGen::geojson)
+target_link_libraries(partitionGenerator PUBLIC NGen::core NGen::geojson NGen::hydrofabric)
 if(NGEN_WITH_SQLITE)
     target_link_libraries(partitionGenerator PUBLIC NGen::geopackage)
 endif()
@@ -442,6 +474,7 @@ ngen_dependent_multiline_message(NGEN_HAS_GIT_DIR
 ngen_multiline_message(
 "  Flags:"
 "    NGEN_WITH_MPI: ${NGEN_WITH_MPI}"
+"    NGEN_WITH_OPENMP: ${NGEN_WITH_OPENMP}"
 "    NGEN_WITH_NETCDF: ${NGEN_WITH_NETCDF}"
 "    NGEN_WITH_PARALLEL_NETCDF: ${NGEN_WITH_PARALLEL_NETCDF}"
 "    NGEN_WITH_HDF5: ${NGEN_WITH_HDF5}"
@@ -501,6 +534,8 @@ ngen_dependent_multiline_message(NGEN_WITH_UDUNITS
 "    Include: ${UDUNITS2_INCLUDE_DIR}")
 ngen_dependent_multiline_message(NGEN_WITH_BMI_FORTRAN
 "  Fortran:"
+"    Compiler: ${CMAKE_Fortran_COMPILER}"
+"    Compiler ID: ${CMAKE_Fortran_COMPILER_ID}"
 "    BMI_FORTRAN_ISO_C_LIB_PATH: ${BMI_FORTRAN_ISO_C_LIB_PATH}"
 "    BMI_FORTRAN_ISO_C_LIB_NAME: ${BMI_FORTRAN_ISO_C_LIB_NAME}"
 "    BMI_FORTRAN_ISO_C_LIB_DIR: ${BMI_FORTRAN_ISO_C_LIB_DIR}")

@@ -6,6 +6,9 @@
 
 namespace realization {
 
+        using models::bmi::get_value_as_type;
+        using models::bmi::get_values_as_type;
+
         std::set<Bmi_Var_Details> Bmi_Module_Formulation::known_bmi_input_vars;
 
         void Bmi_Module_Formulation::create_formulation(boost::property_tree::ptree &config, geojson::PropertyMap *global) {
@@ -39,7 +42,7 @@ namespace realization {
             // so values are returned unconverted, positionally aligned with the names.
             for (const std::string& name : names) {
                 std::string output_units = "";
-                values.push_back(get_value(CatchmentAggrDataSelector(this->get_catchment_id(), name, 0, 0, output_units), MEAN));
+                values.push_back(get_value(CatchmentAggrDataSelector(this->get_feature_id(), name, 0, 0, output_units), MEAN));
             }
             return values;
         }
@@ -88,7 +91,7 @@ namespace realization {
             update(t_index, t_delta);
             double var_value;
             try{
-                var_value = get_value(CatchmentAggrDataSelector(this->get_catchment_id(), get_bmi_main_output_var(), 0, 0, "m"),MEAN);
+                var_value = get_value(CatchmentAggrDataSelector(this->get_feature_id(), get_bmi_main_output_var(), 0, 0, "m"),MEAN);
             }
             catch(UnitsHelper::unit_conversion_exception &uce){
                 bool new_error = UnitsHelper::record_unit_conversion_fault(uce, "Bmi_Module_Formulation::get_response", get_bmi_main_output_var());
@@ -96,7 +99,7 @@ namespace realization {
                     std::stringstream ss;
                     ss << "Unit conversion failure:"
                         << " requester {'Get Response (Module Formulation)"
-                        << "' catchment '" << get_catchment_id()
+                        << "' catchment '" << get_feature_id()
                         << "' variable '" << get_bmi_main_output_var()
                         << "' units 'm'}"
                         << " provider {'" << uce.provider_model_name
@@ -229,7 +232,9 @@ namespace realization {
             if( !bmi_var_name.empty() )
             {
                 //Get forcing value from BMI variable
-                double value = get_var_value_as_double(0, bmi_var_name);
+                // TODO: consider different way of handling (and how to document) cases like long double or unsigned
+                //  long long that don't fit or might convert inappropriately
+                double value = models::bmi::GetValue<double>(*get_bmi_model(), bmi_var_name, 0);
 
                 // Convert units
                 std::string native_units = get_bmi_model()->GetVarUnits(bmi_var_name);
@@ -415,12 +420,6 @@ namespace realization {
                 set_output_header_fields(get_output_variable_names());
             }
 
-            // Output precision, if present
-            auto out_precision_it = properties.find(BMI_REALIZATION_CFG_PARAM_OPT__OUTPUT_PRECISION);
-            if (out_precision_it != properties.end()) {
-                set_output_precision(properties.at(BMI_REALIZATION_CFG_PARAM_OPT__OUTPUT_PRECISION).as_natural_number());
-            }
-
             // Finally, make sure this is set
             model_initialized = get_bmi_model()->is_model_initialized();
 
@@ -434,87 +433,34 @@ namespace realization {
                 //Initialize all NgenBmiProtocols with the valid adapter pointer and any properties
                 //provided in the read configuration.
                 bmi_protocols = models::bmi::protocols::NgenBmiProtocols(get_bmi_model(), properties);
+
+                // Engine-driven restore: if a `serialization.restore` block is
+                // configured AND the model supports the protocol, the container
+                // will locate the matching record in the shared file and write
+                // its bytes back via SetValue(ngen::serialization_state, ...).
+                // When restore is unconfigured, disabled, or unsupported by the
+                // model, run() short-circuits and no mutation occurs. The Context
+                // carries `compound_id()` so the lookup keys by the same identity
+                // the save hook (checkpoint_state) will later use.
+                models::bmi::protocols::Context restore_ctx{
+                    /*current_time_step*/ 0,
+                    /*total_steps*/       0,
+                    /*timestamp*/         "create_model",
+                    /*id*/                compound_id()
+                };
+                (void) bmi_protocols.run(models::bmi::protocols::Protocol::DESERIALIZATION, restore_ctx);
+
+                // Deserialization *may* restore the internal model clock to its saved state.
+                // Re-compute the forcing offset so the restored model time
+                // is consistent with this run's start time;
+                // otherwise forcing reads would shift by the time
+                // elapsed in the saving run.
+                if (get_bmi_model()->GetCurrentTime() != get_bmi_model()->GetStartTime()) {
+                    set_bmi_model_start_time_forcing_offset_s(
+                        forcing->get_data_start_time() - convert_model_time(get_bmi_model()->GetCurrentTime()));
+                }
             }
         }
-        /**
-         * @brief Template function for copying iterator range into contiguous array.
-         *
-         * This function will iterate the range and cast the iterator value to type T
-         * and copy that value into a C-like array of contiguous, dynamically allocated memory.
-         * This array is stored in a smart pointer with a custom array deleter.
-         *
-         * @tparam T
-         * @tparam Iterator
-         * @param begin
-         * @param end
-         * @return std::shared_ptr<T>
-         */
-        template <typename T, typename Iterator>
-        std::shared_ptr<T> as_c_array(Iterator begin, Iterator end){
-            //Make a shared pointer large enough to hold all elements
-            //This is a CONTIGUOUS array of type T
-            //Must provide a custom deleter to delete the array
-            std::shared_ptr<T> ptr( new T[std::distance(begin, end)], [](T *p) { delete[] p; } );
-            Iterator it = begin;
-            int i = 0;
-            while(it != end){
-                //Be safe and cast the input to the desired type
-                ptr.get()[i] = static_cast<T>(*it);
-                ++it;
-                ++i;
-            }
-            return ptr;
-        }
-
-        /**
-         * @brief Gets values in iterator range, casted based on @p type then returned as typeless (void) pointer.
-         *
-         * @tparam Iterator
-         * @param type
-         * @param begin
-         * @param end
-         * @return std::shared_ptr<void>
-         */
-        template <typename Iterator>
-        std::shared_ptr<void> get_values_as_type(std::string type, Iterator begin, Iterator end)
-        {
-            //Use std::vector range constructor to ensure contiguous storage of values
-            //Return the pointer to the contiguous storage
-            if (type == "double" || type == "double precision")
-                return as_c_array<double>(begin, end);
-
-            if (type == "float" || type == "real")
-                return as_c_array<float>(begin, end);
-
-            if (type == "short" || type == "short int" || type == "signed short" || type == "signed short int")
-                return as_c_array<short>(begin, end);
-
-            if (type == "unsigned short" || type == "unsigned short int")
-                return as_c_array<unsigned short>(begin, end);
-
-            if (type == "int" || type == "signed" || type == "signed int" || type == "integer")
-                return as_c_array<int>(begin, end);
-
-            if (type == "unsigned" || type == "unsigned int")
-                return as_c_array<unsigned int>(begin, end);
-
-            if (type == "long" || type == "long int" || type == "signed long" || type == "signed long int")
-                return as_c_array<long>(begin, end);
-
-            if (type == "unsigned long" || type == "unsigned long int")
-                return as_c_array<unsigned long>(begin, end);
-
-            if (type == "long long" || type == "long long int" || type == "signed long long" || type == "signed long long int")
-                return as_c_array<long long>(begin, end);
-
-            if (type == "unsigned long long" || type == "unsigned long long int")
-                return as_c_array<unsigned long long>(begin, end);
-
-            throw std::runtime_error("Unable to get values of iterable as type" + type +
-                " : no logic for converting values to variable's type.");
-        }
-
-
         void Bmi_Module_Formulation::set_initial_bmi_parameters(geojson::PropertyMap properties) {
             auto model = get_bmi_model();
             if( model == nullptr ) return;
@@ -534,12 +480,10 @@ namespace realization {
                 std::shared_ptr<void> value_ptr;
                 for (auto& param : params) {
                     //Get some basic BMI info for this param
-                    int varItemSize = get_bmi_model()->GetVarItemsize(param.first);
                     int totalBytes = get_bmi_model()->GetVarNbytes(param.first);
 
                     //Figure out the c++ type to convert data to
-                    std::string type = get_bmi_model()->get_analogous_cxx_type(get_bmi_model()->GetVarType(param.first),
-                                                                           varItemSize);
+                    const models::bmi::primitive_type type = models::bmi::resolve_var_type(*get_bmi_model(), param.first);
                     //TODO might consider refactoring as_vector and get_values_as_type
                     //(and by extension, as_c_array) into the JSONProperty class
                     //then instead of the PropertyVariant visitor filling vectors
@@ -640,44 +584,6 @@ namespace realization {
             model_initialized = is_initialized;
         }
 
-        // TODO: need to modify this to support arrays properly, since in general that's what BMI modules deal with
-        template<typename T>
-        std::shared_ptr<void> get_value_as_type(std::string type, T value)
-        {
-            if (type == "double" || type == "double precision")
-                return std::make_shared<double>( static_cast<double>(value) );
-
-            if (type == "float" || type == "real")
-                return std::make_shared<float>( static_cast<float>(value) );
-
-            if (type == "short" || type == "short int" || type == "signed short" || type == "signed short int")
-                return std::make_shared<short>( static_cast<short>(value) );
-
-            if (type == "unsigned short" || type == "unsigned short int")
-                return std::make_shared<unsigned short>( static_cast<unsigned short>(value) );
-
-            if (type == "int" || type == "signed" || type == "signed int" || type == "integer")
-                return std::make_shared<int>( static_cast<int>(value) );
-
-            if (type == "unsigned" || type == "unsigned int")
-                return std::make_shared<unsigned int>( static_cast<unsigned int>(value) );
-
-            if (type == "long" || type == "long int" || type == "signed long" || type == "signed long int")
-                return std::make_shared<long>( static_cast<long>(value) );
-
-            if (type == "unsigned long" || type == "unsigned long int")
-                return std::make_shared<unsigned long>( static_cast<unsigned long>(value) );
-
-            if (type == "long long" || type == "long long int" || type == "signed long long" || type == "signed long long int")
-                return std::make_shared<long long>( static_cast<long long>(value) );
-
-            if (type == "unsigned long long" || type == "unsigned long long int")
-                return std::make_shared<unsigned long long>( static_cast<unsigned long long>(value) );
-
-            throw std::runtime_error("Unable to get value of variable as type '" + type +
-                "': no logic for converting value to variable's type.");
-        }
-
         void Bmi_Module_Formulation::set_model_inputs_prior_to_update(const double &model_time, time_step_t t_delta) {
             time_t forcing_start = convert_model_time(model_time) + get_bmi_model_start_time_forcing_offset_s();
             if (cache_input_variable_metadata) {
@@ -713,7 +619,7 @@ namespace realization {
                     mapped_alias,
                     item_size,
                     get_bmi_model()->GetVarNbytes(var_name) / item_size,
-                    get_bmi_model()->get_analogous_cxx_type(get_bmi_model()->GetVarType(var_name), item_size),
+                    models::bmi::resolve_var_type(*get_bmi_model(), var_name),
                     get_bmi_model()->GetVarUnits(var_name)
                 );
 
@@ -753,7 +659,7 @@ namespace realization {
                                           mapped_alias,
                                           item_size,
                                           get_bmi_model()->GetVarNbytes(var_name) / item_size,
-                                          get_bmi_model()->get_analogous_cxx_type(get_bmi_model()->GetVarType(var_name), item_size),
+                                          models::bmi::resolve_var_type(*get_bmi_model(), var_name),
                                           get_bmi_model()->GetVarUnits(var_name)));
 
                 bmi_input_var_details->push_back(const_cast<Bmi_Var_Details*>(&(*(iter_and_result.first))));
@@ -769,7 +675,7 @@ namespace realization {
             if (var_details->get_num_items() != 1) {
                 //more than a single value needed for var_name
                 std::vector<data_type> values = provider->get_values(
-                    CatchmentAggrDataSelector(get_catchment_id(), var_details->get_mapped_alias(), src_data_start,
+                    CatchmentAggrDataSelector(get_feature_id(), var_details->get_mapped_alias(), src_data_start,
                                               t_delta, var_details->get_units())
                 );
                 //need to marshal data types to the receiver as well
@@ -789,22 +695,22 @@ namespace realization {
                         + std::to_string(var_details->get_num_items()) + ", provider returned "
                         + std::to_string(values.size()) + " items\n");
                 }
-                value_ptr = get_values_as_type(var_details->get_cpp_type(), values.begin(), values.end());
+                value_ptr = get_values_as_type(var_details->get_type(), values.begin(), values.end());
             }
             else {
                 try {
                     //scalar value
                     double value = provider->get_value(CatchmentAggrDataSelector(
-                        this->get_catchment_id(), var_details->get_mapped_alias(), src_data_start, t_delta,
+                        this->get_feature_id(), var_details->get_mapped_alias(), src_data_start, t_delta,
                         var_details->get_units()));
-                    value_ptr = get_value_as_type(var_details->get_cpp_type(), value);
+                    value_ptr = get_value_as_type(var_details->get_type(), value);
                 } catch (UnitsHelper::unit_conversion_exception &uce) {
                     bool new_error = UnitsHelper::record_unit_conversion_fault(
                         uce, "Bmi_Module_Formulation::perform_set", var_details->get_mapped_alias());
                     if (new_error) {
                         std::stringstream ss;
                         ss << "Unit conversion failure:"
-                           << " requester {'" << get_bmi_model()->get_model_name() << "' catchment '" << get_catchment_id()
+                           << " requester {'" << get_bmi_model()->get_model_name() << "' catchment '" << get_feature_id()
                            << "' variable '" << var_details->get_name() << "'"
                            << " (alias '" << var_details->get_mapped_alias() << "')"
                            << " units '" << var_details->get_units() << "'}"
@@ -813,7 +719,7 @@ namespace realization {
                            << " message \"" << uce.what() << "\"\n";
                         logging::warning(ss.str().c_str()); ss.str("");
                     }
-                    value_ptr = get_value_as_type(var_details->get_cpp_type(), uce.unconverted_values[0]);
+                    value_ptr = get_value_as_type(var_details->get_type(), uce.unconverted_values[0]);
                 }
             }
             get_bmi_model()->SetValue(var_details->get_name(), value_ptr.get());

@@ -3,14 +3,15 @@
 #if NGEN_WITH_PYTHON
 
 #include "Bmi_Py_Formulation.hpp"
+#include "bmi_utilities.hpp"
 
 using namespace realization;
 using namespace models::bmi;
 
 using namespace pybind11::literals;
 
-Bmi_Py_Formulation::Bmi_Py_Formulation(std::string id, std::shared_ptr<data_access::GenericDataProvider> forcing, utils::StreamHandler output_stream)
-: Bmi_Module_Formulation(id, std::move(forcing), output_stream) { }
+Bmi_Py_Formulation::Bmi_Py_Formulation(std::string id, std::shared_ptr<data_access::GenericDataProvider> forcing)
+: Bmi_Module_Formulation(id, std::move(forcing)) { }
 
 std::shared_ptr<Bmi_Adapter> Bmi_Py_Formulation::construct_model(const geojson::PropertyMap &properties) {
     auto python_type_name_iter = properties.find(BMI_REALIZATION_CFG_PARAM_OPT__PYTHON_TYPE_NAME);
@@ -45,59 +46,6 @@ const std::vector<std::string> Bmi_Py_Formulation::get_bmi_output_variables() co
 
 std::string Bmi_Py_Formulation::get_formulation_type() const {
     return "bmi_py";
-}
-
-double Bmi_Py_Formulation::get_var_value_as_double(const int &index, const std::string &var_name) {
-    auto model = std::dynamic_pointer_cast<models::bmi::Bmi_Py_Adapter>(get_bmi_model());
-
-    std::string val_type = model->GetVarType(var_name);
-    size_t val_item_size = (size_t)model->GetVarItemsize(var_name);
-
-    //void *dest;
-    int indices[1];
-    indices[0] = index;
-
-    // The available types and how they are handled here should match what is in SetValueAtIndices
-    if (val_type == "int" && val_item_size == sizeof(short)) {
-        short dest;
-        model->get_value_at_indices(var_name, &dest, indices, 1, false);
-        return (double)dest;
-    }
-    if (val_type == "int" && val_item_size == sizeof(int)) {
-        int dest;
-        model->get_value_at_indices(var_name, &dest, indices, 1, false);
-        return (double)dest;
-    }
-    if (val_type == "int" && val_item_size == sizeof(long)) {
-        long dest;
-        model->get_value_at_indices(var_name, &dest, indices, 1, false);
-        return (double)dest;
-    }
-    if (val_type == "int" && val_item_size == sizeof(long long)) {
-        long long dest;
-        model->get_value_at_indices(var_name, &dest, indices, 1, false);
-        return (double)dest;
-    }
-    if (val_type == "float" || val_type == "float16" || val_type == "float32" || val_type == "float64") {
-        if (val_item_size == sizeof(float)) {
-            float dest;
-            model->get_value_at_indices(var_name, &dest, indices, 1, false);
-            return (double) dest;
-        }
-        if (val_item_size == sizeof(double)) {
-            double dest;
-            model->get_value_at_indices(var_name, &dest, indices, 1, false);
-            return dest;
-        }
-        if (val_item_size == sizeof(long double)) {
-            long double dest;
-            model->get_value_at_indices(var_name, &dest, indices, 1, false);
-            return (double) dest;
-        }
-    }
-
-    throw std::runtime_error("Unable to get value of variable " + var_name + " from " + get_model_type_name() +
-    " as double: no logic for converting variable type " + val_type);
 }
 
 bool Bmi_Py_Formulation::is_bmi_input_variable(const std::string &var_name) const {

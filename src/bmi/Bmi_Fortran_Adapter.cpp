@@ -2,8 +2,46 @@
 
 #if NGEN_WITH_BMI_FORTRAN
 #include "bmi/Bmi_Fortran_Adapter.hpp"
+#include "utilities/bmi_utilities.hpp"
+
+#include <array>
+#include <mutex>
+#include <vector>
+
+// Comes from libgfortran
+extern "C" void _gfortran_set_options (int num, int const *options);
 
 using namespace models::bmi;
+
+namespace {
+    std::once_flag fortran_runtime_initialization;
+}
+
+void Bmi_Fortran_Adapter::construct_and_init_backing_model_for_fortran() {
+    if (model_initialized)
+        return;
+    bmi_model = std::make_unique<Bmi_Fortran_Handle_Wrapper>(Bmi_Fortran_Handle_Wrapper());
+
+#if NGEN_WITH_OPENMP
+    // Ensure that the GNU Fortran runtime library is
+    // initialized with Fortran 2018 support enabled, so
+    // that it will allow multiple units to be attached to
+    // individual files. This is necessary to support
+    // multi-threaded formulation initialization, since
+    // each instance will open its namelist and subsidiary
+    // files independently.
+    static constexpr std::array fortran_options{ 0, 16383 };
+    std::call_once(fortran_runtime_initialization, [](){ _gfortran_set_options(fortran_options.size(), fortran_options.data()); });
+#endif
+
+    dynamic_library_load();
+    execModuleRegistration();
+    int init_result = initialize(&bmi_model->handle, bmi_init_config.c_str());
+    if (init_result != BMI_SUCCESS) {
+        init_exception_msg = "Failure when attempting to initialize " + model_name;
+        throw models::external::State_Exception(init_exception_msg);
+    }
+}
 
 std::string Bmi_Fortran_Adapter::GetComponentName() {
     char component_name[BMI_MAX_COMPONENT_NAME];
@@ -69,16 +107,47 @@ std::string Bmi_Fortran_Adapter::GetTimeUnits() {
     return {time_units_cstr};
 }
 
-void Bmi_Fortran_Adapter::GetValueAtIndices(std::string name, void *dest, int *inds, int count) {
-    // TODO: implement later by manually handling index convertion on this level.
-    /*
-    if (get_value_at_indices(&bmi_model->handle, name.c_str(), dest, inds, count) != BMI_SUCCESS) {
-        throw models::external::State_Exception(
-                model_name + " failed to get variable " + name + " for " + std::to_string(count) +
-                " indices.");
+models::bmi::primitive_type Bmi_Fortran_Adapter::get_value_primitive_type(std::string_view name) {
+    try {
+        return models::bmi::resolve_var_type(*this, name);
     }
-     */
-    throw std::runtime_error("Fortran BMI module integration does not currently support getting values by index");
+    catch (const models::bmi::unknown_bmi_type &e) {
+        throw ::external::ExternalIntegrationException(
+                "Can't use model " + model_name + " variable " + std::string(name) + " of type '" + e.type_name + "'.");
+    }
+}
+
+template <typename T>
+void Bmi_Fortran_Adapter::get_value_as(const std::string &name, T *dest, models::bmi::primitive_type type) {
+    // There is a getter for T exactly when the ISO C shim has one that wide; see the inner_get_value() overloads.
+    if constexpr (requires(const std::string &n, T *values) { this->inner_get_value(n, values); }) {
+        inner_get_value(name, dest);
+    }
+    else {
+        throw ::external::ExternalIntegrationException(
+                "Can't get model " + model_name + " variable " + name + " as '" + models::bmi::to_string(type) +
+                "': the Fortran BMI interface has no getter for that type.");
+    }
+}
+
+void Bmi_Fortran_Adapter::GetValue(std::string name, void *dest) {
+    const models::bmi::primitive_type type = get_value_primitive_type(name);
+    models::bmi::with_primitive_type(type, [&]<typename T>() {
+        get_value_as(name, static_cast<T *>(dest), type);
+    });
+}
+
+void Bmi_Fortran_Adapter::GetValueAtIndices(std::string name, void *dest, int *inds, int count) {
+    // The ISO C shim has no access by index, so read the whole variable and pick the items out of it.
+    const models::bmi::primitive_type type = get_value_primitive_type(name);
+    models::bmi::with_primitive_type(type, [&]<typename T>() {
+        const int num_items = GetVarNbytes(name) / static_cast<int>(sizeof(T));
+        std::vector<T> values(num_items);
+        get_value_as(name, values.data(), type);
+        for (int i = 0; i < count; ++i) {
+            static_cast<T *>(dest)[i] = values.at(inds[i]);
+        }
+    });
 }
 
 int Bmi_Fortran_Adapter::GetVarItemsize(std::string name) {
@@ -150,7 +219,18 @@ int Bmi_Fortran_Adapter::GetGridSize(int grid_id) {
 }
 
 void Bmi_Fortran_Adapter::SetValue(std::string name, void *src) {
-    inner_set_value(name, src);
+    const models::bmi::primitive_type type = get_value_primitive_type(name);
+    models::bmi::with_primitive_type(type, [&]<typename T>() {
+        // There is a setter for T exactly when the ISO C shim has one that wide; see the inner_set_value() overloads.
+        if constexpr (requires(const std::string &n, T *values) { this->inner_set_value(n, values); }) {
+            inner_set_value(name, static_cast<T *>(src));
+        }
+        else {
+            throw ::external::ExternalIntegrationException(
+                    "Can't set model " + model_name + " variable " + name + " as '" + models::bmi::to_string(type) +
+                    "': the Fortran BMI interface has no setter for that type.");
+        }
+    });
 }
 
 bool Bmi_Fortran_Adapter::is_model_initialized() {

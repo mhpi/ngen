@@ -12,6 +12,7 @@
 #include "Bmi_C_Formulation.hpp"
 #include "Bmi_Fortran_Formulation.hpp"
 #include "Bmi_Py_Formulation.hpp"
+#include "realizations/config/global_config.hpp"
 
 using namespace realization;
 
@@ -52,16 +53,28 @@ void Bmi_Multi_Formulation::create_multi_formulation(geojson::PropertyMap proper
     for (size_t i = 0; i < nested_module_configs.size(); ++i) {
         geojson::JSONProperty formulation_config = nested_module_configs[i];
         std::string type_name = formulation_config.at("name").as_string();
-        std::string identifier = get_catchment_id() + "." + std::to_string(i);
+        std::string identifier = get_id() + "." + std::to_string(i);
         nested_module_ptr module = nullptr;
         bool inactive_type_requested = false;
         module_types[i] = type_name;
+
+        // Build the submodule's params map, inheriting any realization-
+        // level defaults (e.g. `serialization`) from the multi's own
+        // params when the submodule doesn't declare its own. Each
+        // submodule owns its own NgenBmiProtocols container so these
+        // blocks must reach every leaf of the formulation tree.
+        geojson::PropertyMap submodule_params = formulation_config.at("params").get_values();
+        realization::config::apply_config(
+            submodule_params, properties,
+            realization::config::GlobalConfigKey::SERIALIZATION
+        );
+
         if (type_name == "bmi_c++") {
-            module = init_nested_module<Bmi_Cpp_Formulation>(i, identifier, formulation_config.at("params").get_values());
+            module = init_nested_module<Bmi_Cpp_Formulation>(i, identifier, submodule_params);
         }
         if (type_name == "bmi_c") {
             #if NGEN_WITH_BMI_C
-            module = init_nested_module<Bmi_C_Formulation>(i, identifier, formulation_config.at("params").get_values());
+            module = init_nested_module<Bmi_C_Formulation>(i, identifier, submodule_params);
             #else
             inactive_type_requested = true;
             #endif
@@ -69,14 +82,14 @@ void Bmi_Multi_Formulation::create_multi_formulation(geojson::PropertyMap proper
         if (type_name == "bmi_fortran") {
 
             #if NGEN_WITH_BMI_FORTRAN
-            module = init_nested_module<Bmi_Fortran_Formulation>(i, identifier, formulation_config.at("params").get_values());
+            module = init_nested_module<Bmi_Fortran_Formulation>(i, identifier, submodule_params);
             #else
             inactive_type_requested = true;
             #endif
         }
         if (type_name == "bmi_python") {
             #if NGEN_WITH_PYTHON
-            module = init_nested_module<Bmi_Py_Formulation>(i, identifier, formulation_config.at("params").get_values());
+            module = init_nested_module<Bmi_Py_Formulation>(i, identifier, submodule_params);
             #else // NGEN_WITH_PYTHON
             inactive_type_requested = true;
             #endif // NGEN_WITH_PYTHON
@@ -138,12 +151,6 @@ void Bmi_Multi_Formulation::create_multi_formulation(geojson::PropertyMap proper
     }
     else {
         set_output_header_fields(get_output_variable_names());
-    }
-
-    // Output precision, if present
-    auto out_precision_it = properties.find(BMI_REALIZATION_CFG_PARAM_OPT__OUTPUT_PRECISION);
-    if (out_precision_it != properties.end()) {
-        set_output_precision(properties.at(BMI_REALIZATION_CFG_PARAM_OPT__OUTPUT_PRECISION).as_natural_number());
     }
 
     // check if a requested output variable name is valid, if not, stop the execution
@@ -355,7 +362,7 @@ std::vector<double> Bmi_Multi_Formulation::get_output_values_for_timestep(int ti
         time_t model_time = convert_model_time(get_model_current_time()) + get_bmi_model_start_time_forcing_offset_s();
         for (const std::string &name : output_var_names) {
             std::string output_units = "";
-            values.push_back(get_value(CatchmentAggrDataSelector(this->get_catchment_id(), name, model_time, 3600, output_units), MEAN));
+            values.push_back(get_value(CatchmentAggrDataSelector(this->get_feature_id(), name, model_time, 3600, output_units), MEAN));
         }
         return values;
     }
@@ -434,7 +441,7 @@ double Bmi_Multi_Formulation::get_response(time_step_t t_index, time_step_t t_de
     }
     double var_value;
     try{
-        var_value = modules[index]->get_value(CatchmentAggrDataSelector(this->get_catchment_id(), get_bmi_main_output_var(), 0, 0, "m"), MEAN);
+        var_value = modules[index]->get_value(CatchmentAggrDataSelector(this->get_feature_id(), get_bmi_main_output_var(), 0, 0, "m"), MEAN);
     }
     catch(UnitsHelper::unit_conversion_exception &uce){
         bool new_error = UnitsHelper::record_unit_conversion_fault(uce, "Bmi_Multi_Formulation::get_response", get_bmi_main_output_var());
@@ -442,7 +449,7 @@ double Bmi_Multi_Formulation::get_response(time_step_t t_index, time_step_t t_de
             std::stringstream ss;
             ss << "Unit conversion failure:"
                 << " requester {'Get Response (Multi Formulation)"
-                << "' catchment '" << get_catchment_id()
+                << "' catchment '" << get_feature_id()
                 << "' variable '" << get_bmi_main_output_var()
                 << "' units 'm'}"
                 << " provider {'" << uce.provider_model_name

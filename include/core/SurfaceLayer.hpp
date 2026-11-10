@@ -2,6 +2,7 @@
 #define __NGEN_SURFACE_LAYER__
 
 #include "Layer.hpp"
+#include "core/nexus/HY_HydroNexus.hpp"
 #include "utilities/output/NexusOutputsMgr.hpp"
 
 namespace ngen
@@ -15,11 +16,10 @@ namespace ngen
                 const std::vector<std::string>& p_u, 
                 const Simulation_Time& s_t, 
                 feature_type& f, 
-                geojson::GeoJSON cd, 
                 long idx,
                 const std::shared_ptr<utils::NexusOutputsMgr> &nexus_outputs_mgr,
                 std::shared_ptr<utils::CatchmentOutputsMgr> catchment_output_mgr) :
-                    Layer(desc,p_u,s_t,f,cd,idx,catchment_output_mgr),
+                    Layer(desc,p_u,s_t,f,idx,catchment_output_mgr),
                     nexus_outputs_mgr(nexus_outputs_mgr)
         {
 
@@ -36,6 +36,7 @@ namespace ngen
 
         private:
         std::shared_ptr<utils::NexusOutputsMgr> nexus_outputs_mgr;
+        std::vector<std::shared_ptr<HY_HydroNexus>> nexuses;
     };
 }
 

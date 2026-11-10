@@ -9,6 +9,7 @@
 #include "StreamHandler.hpp"
 #include "FileChecker.h"
 #include <memory>
+#include <optional>
 #include <vector>
 #include <string>
 #include <unistd.h>
@@ -173,6 +174,27 @@ TEST_F(NetCDFPerFeatureDataProviderTest, TestForcingDataReadMultiSpan)
     ASSERT_EQ(ids, nc_provider.get_ids());
 }
 
+// Hints matching no id in the file fail on every read, and leave the
+// provider able to apply hints that do match once they are added
+TEST_F(NetCDFPerFeatureDataProviderTest, TestForcingDataReadUnmatchedHints)
+{
+    NetCDFPerFeatureDataProvider nc_provider(forcing_file_name, forcing_p->simulation_start_t, forcing_p->simulation_end_t, utils::getStdErr() );
+    nc_provider.hint_shared_provider_id("cat-999");
+
+    auto start_time = nc_provider.get_data_start_time();
+    auto duration = nc_provider.record_duration();
+    CatchmentAggrDataSelector selector("cat-52", CSDMS_STD_NAME_SURFACE_TEMP, start_time, duration, "K");
+
+    EXPECT_THROW(nc_provider.get_value(selector, data_access::MEAN), std::runtime_error);
+    EXPECT_THROW(nc_provider.get_value(selector, data_access::MEAN), std::runtime_error);
+
+    nc_provider.hint_shared_provider_id("cat-52");
+
+    double tol = 0.00002;
+    EXPECT_NEAR(nc_provider.get_value(selector, data_access::MEAN), 285.9, tol);
+    ASSERT_EQ(std::vector<std::string>{"cat-52"}, nc_provider.get_ids());
+}
+
 ///Test AORC Forcing Object
 TEST_F(NetCDFPerFeatureDataProviderTest, TestForcingDataRead)
 {
@@ -237,10 +259,21 @@ class NetCDFCacheLayoutTest : public ::testing::Test {
         return 100.0 * cat + t;
     }
 
+    struct ForcingVar {
+        std::string name;
+        std::string units;
+        double offset;
+    };
+
+    // Creates a forcing file with one variable "temp" (units K); see below
+    std::string makeForcing(const std::string& name, std::size_t n_cats, std::size_t n_times, std::size_t time_chunk, double offset = 0) {
+        return makeForcing(name, n_cats, n_times, time_chunk, {{"temp", "K", offset}});
+    }
+
     // Creates a forcing file with n_cats catchments ("cat-0".."cat-N"), n_times
-    // hourly timesteps starting at kStartEpoch, and one variable "temp" (units K)
-    // holding cellValue(cat, t). time_chunk == 0 leaves the variable contiguous.
-    std::string makeForcing(const std::string& name, std::size_t n_cats, std::size_t n_times, std::size_t time_chunk) {
+    // hourly timesteps starting at kStartEpoch, and each of vars holding
+    // cellValue(cat, t) + its offset. time_chunk == 0 leaves the variables contiguous.
+    std::string makeForcing(const std::string& name, std::size_t n_cats, std::size_t n_times, std::size_t time_chunk, const std::vector<ForcingVar>& vars) {
         std::string path = "./" + name;
         temp_files.push_back(path);
 
@@ -270,26 +303,29 @@ class NetCDFCacheLayoutTest : public ::testing::Test {
         }
         time_var.putVar(times.data());
 
-        auto temp_var = out.addVar("temp", netCDF::ncDouble, dims);
-        temp_var.putAtt("units", "K");
-        if (time_chunk > 0) {
-            std::vector<std::size_t> chunk_sizes = {n_cats, time_chunk};
-            temp_var.setChunking(netCDF::NcVar::nc_CHUNKED, chunk_sizes);
-        }
-        std::vector<double> vals(n_cats * n_times);
-        for (std::size_t i = 0; i < n_cats; ++i) {
-            for (std::size_t t = 0; t < n_times; ++t) {
-                vals[i * n_times + t] = cellValue(i, t);
+        for (const auto& v : vars) {
+            auto var = out.addVar(v.name, netCDF::ncDouble, dims);
+            var.putAtt("units", v.units);
+            if (time_chunk > 0) {
+                std::vector<std::size_t> chunk_sizes = {n_cats, time_chunk};
+                var.setChunking(netCDF::NcVar::nc_CHUNKED, chunk_sizes);
             }
+            std::vector<double> vals(n_cats * n_times);
+            for (std::size_t i = 0; i < n_cats; ++i) {
+                for (std::size_t t = 0; t < n_times; ++t) {
+                    vals[i * n_times + t] = cellValue(i, t) + v.offset;
+                }
+            }
+            var.putVar(vals.data());
         }
-        temp_var.putVar(vals.data());
 
         return path;
     }
 
-    static double readStep(NetCDFPerFeatureDataProvider& p, std::size_t cat, std::size_t t) {
-        CatchmentAggrDataSelector sel("cat-" + std::to_string(cat), "temp",
-                                      kStartEpoch + t * kStride, kStride, "K");
+    static double readStep(NetCDFPerFeatureDataProvider& p, std::size_t cat, std::size_t t,
+                           const std::string& var = "temp", const std::string& units = "K") {
+        CatchmentAggrDataSelector sel("cat-" + std::to_string(cat), var,
+                                      kStartEpoch + t * kStride, kStride, units);
         return p.get_value(sel, data_access::MEAN);
     }
 
@@ -338,6 +374,59 @@ TEST_F(NetCDFCacheLayoutTest, PartialLastPageRead)
     }
 }
 
+// Each read must come from the variable it names, whether by its name in
+// the file or by the CSDMS name of a well-known field, with every
+// variable's pages cached alongside the others'
+TEST_F(NetCDFCacheLayoutTest, ReadsComeFromTheNamedVariable)
+{
+    const std::size_t n_cats = 3, n_times = 50, chunk = 24; // pages: 24, 24, 2
+    // Not in name order, and T2D and PSFC are well-known fields
+    const std::vector<ForcingVar> vars = {
+        {"temp",   "K",       0},
+        {"T2D",    "K",       1000},
+        {"precip", "mm s^-1", 2000},
+        {"PSFC",   "Pa",      3000},
+    };
+    auto path = makeForcing("nc_cache_variables.nc", n_cats, n_times, chunk, vars);
+    NetCDFPerFeatureDataProvider provider(path, kStartEpoch, kStartEpoch + n_times * kStride, utils::getStdErr());
+
+    // The first reads of the well-known fields are by their CSDMS names
+    EXPECT_DOUBLE_EQ(readStep(provider, 1, 0, CSDMS_STD_NAME_SURFACE_TEMP, "K"), cellValue(1, 0) + 1000);
+    EXPECT_DOUBLE_EQ(readStep(provider, 1, 0, CSDMS_STD_NAME_SURFACE_AIR_PRESSURE, "Pa"), cellValue(1, 0) + 3000);
+
+    for (std::size_t t = 0; t < n_times; ++t) {
+        for (std::size_t cat = 0; cat < n_cats; ++cat) {
+            for (const auto& v : vars) {
+                EXPECT_DOUBLE_EQ(readStep(provider, cat, t, v.name, v.units), cellValue(cat, t) + v.offset)
+                    << "var=" << v.name << " cat=" << cat << " t=" << t;
+            }
+        }
+    }
+
+    // and the CSDMS names read from pages cached by reads using the names in the file
+    EXPECT_DOUBLE_EQ(readStep(provider, 2, n_times - 1, CSDMS_STD_NAME_SURFACE_TEMP, "K"), cellValue(2, n_times - 1) + 1000);
+    EXPECT_DOUBLE_EQ(readStep(provider, 2, n_times - 1, CSDMS_STD_NAME_SURFACE_AIR_PRESSURE, "Pa"), cellValue(2, n_times - 1) + 3000);
+}
+
+// A provider constructed at the address of a destroyed one must read its
+// own file, not pages the earlier provider's threads cached.
+TEST_F(NetCDFCacheLayoutTest, ProviderAtReusedAddressReadsItsOwnData)
+{
+    const std::size_t n_cats = 3, n_times = 30, chunk = 24;
+    auto first_path = makeForcing("nc_cache_reuse_first.nc", n_cats, n_times, chunk);
+    auto second_path = makeForcing("nc_cache_reuse_second.nc", n_cats, n_times, chunk, 1000.0);
+
+    std::optional<NetCDFPerFeatureDataProvider> provider;
+    provider.emplace(first_path, kStartEpoch, kStartEpoch + n_times * kStride, utils::getStdErr());
+    const auto* first_address = &*provider;
+    EXPECT_DOUBLE_EQ(readStep(*provider, 1, 3), cellValue(1, 3));
+    provider.reset();
+
+    provider.emplace(second_path, kStartEpoch, kStartEpoch + n_times * kStride, utils::getStdErr());
+    ASSERT_EQ(&*provider, first_address);
+    EXPECT_DOUBLE_EQ(readStep(*provider, 1, 3), cellValue(1, 3) + 1000.0);
+}
+
 // A multi-timestep read whose range starts mid-page and crosses a page
 // boundary must access every page the range spans.
 TEST_F(NetCDFCacheLayoutTest, ReadStraddlesPageBoundary)
@@ -378,18 +467,27 @@ TEST(NetCDFTimeMetadata, InterpretTimeUnitsRecognized)
     using P = NetCDFPerFeatureDataProvider;
     struct Case { const char* str; P::TimeUnit unit; double scale; };
     const std::vector<Case> cases = {
-        {"h",            P::TIME_HOURS,        3600},
-        {"hours",        P::TIME_HOURS,        3600},
-        {"m",            P::TIME_MINUTES,      60},
-        {"minutes",      P::TIME_MINUTES,      60},
-        {"s",            P::TIME_SECONDS,      1},
-        {"seconds",      P::TIME_SECONDS,      1},
-        {"ms",           P::TIME_MILLISECONDS, .001},
-        {"milliseconds", P::TIME_MILLISECONDS, .001},
-        {"us",           P::TIME_MICROSECONDS, .000001},
-        {"microseconds", P::TIME_MICROSECONDS, .000001},
-        {"ns",           P::TIME_NANOSECONDS,  .000000001},
-        {"nanoseconds",  P::TIME_NANOSECONDS,  .000000001},
+        {"d",            P::TimeUnit::Days,         86400},
+        {"day",          P::TimeUnit::Days,         86400},
+        {"days",         P::TimeUnit::Days,         86400},
+        {"h",            P::TimeUnit::Hours,        3600},
+        {"hr",           P::TimeUnit::Hours,        3600},
+        {"hour",         P::TimeUnit::Hours,        3600},
+        {"hours",        P::TimeUnit::Hours,        3600},
+        {"m",            P::TimeUnit::Minutes,      60},
+        {"min",          P::TimeUnit::Minutes,      60},
+        {"minute",       P::TimeUnit::Minutes,      60},
+        {"minutes",      P::TimeUnit::Minutes,      60},
+        {"s",            P::TimeUnit::Seconds,      1},
+        {"sec",          P::TimeUnit::Seconds,      1},
+        {"second",       P::TimeUnit::Seconds,      1},
+        {"seconds",      P::TimeUnit::Seconds,      1},
+        {"ms",           P::TimeUnit::Milliseconds, .001},
+        {"milliseconds", P::TimeUnit::Milliseconds, .001},
+        {"us",           P::TimeUnit::Microseconds, .000001},
+        {"microseconds", P::TimeUnit::Microseconds, .000001},
+        {"ns",           P::TimeUnit::Nanoseconds,  .000000001},
+        {"nanoseconds",  P::TimeUnit::Nanoseconds,  .000000001},
     };
     for (const auto& c : cases) {
         auto info = P::interpret_time_units(c.str);
@@ -400,45 +498,52 @@ TEST(NetCDFTimeMetadata, InterpretTimeUnitsRecognized)
     }
 }
 
-// CF "<unit> since <date>" units yield the base unit plus the embedded reference epoch.
-TEST(NetCDFTimeMetadata, InterpretTimeUnitsCFSinceEpoch)
-{
-    using P = NetCDFPerFeatureDataProvider;
-    auto secs = P::interpret_time_units("seconds since 1970-01-01 00:00:00");
-    ASSERT_TRUE(secs.has_value());
-    EXPECT_EQ(secs->unit, P::TIME_SECONDS);
-    EXPECT_DOUBLE_EQ(secs->scale_factor, 1);
-    ASSERT_TRUE(secs->epoch_start_time.has_value());
-    EXPECT_EQ(*secs->epoch_start_time, 0);
-
-    auto hrs = P::interpret_time_units("hours since 2000-01-01 00:00:00");
-    ASSERT_TRUE(hrs.has_value());
-    EXPECT_EQ(hrs->unit, P::TIME_HOURS);
-    EXPECT_DOUBLE_EQ(hrs->scale_factor, 3600);
-    ASSERT_TRUE(hrs->epoch_start_time.has_value());
-    EXPECT_EQ(*hrs->epoch_start_time, 946684800);
-}
-
 // Unrecognized or empty unit strings yield no value, so callers keep their defaults.
 TEST(NetCDFTimeMetadata, InterpretTimeUnitsUnrecognized)
 {
     using P = NetCDFPerFeatureDataProvider;
     EXPECT_FALSE(P::interpret_time_units("").has_value());
-    EXPECT_FALSE(P::interpret_time_units("days").has_value());
+    EXPECT_FALSE(P::interpret_time_units("weeks").has_value());
     EXPECT_FALSE(P::interpret_time_units("fortnights").has_value());
 }
 
-// parse_epoch converts a timestamp to UTC epoch seconds and honors the supplied format.
+// CF reference dates may omit the time of day or the seconds, use ISO 8601's
+// 'T' separator, carry zero fractional seconds, and end in Z, UTC or an offset
+// from UTC
 TEST(NetCDFTimeMetadata, ParseEpoch)
 {
     using P = NetCDFPerFeatureDataProvider;
-    // unambiguous 4-digit-year format
-    EXPECT_EQ(P::parse_epoch("1970-01-01 00:00:00", "%Y-%m-%d %H:%M:%S"), 0);
-    EXPECT_EQ(P::parse_epoch("1970-01-02 00:00:00", "%Y-%m-%d %H:%M:%S"), 86400);
-    EXPECT_EQ(P::parse_epoch("2000-01-01 00:00:00", "%Y-%m-%d %H:%M:%S"), 946684800);
-    // the provider's default epoch string and format
-    EXPECT_EQ(P::parse_epoch("01/01/1970 00:00:00", "%D %T"), 0);
-    // a timestamp that doesn't match the format is an error, not a silent zero
-    EXPECT_THROW(P::parse_epoch("not a date", "%Y-%m-%d %H:%M:%S"), std::runtime_error);
+    const std::time_t y2k = 946684800;
+    for (const char* text : {
+            "2000-01-01 00:00:00", "2000-01-01", "2000-01-01 00:00", "2000-01-01T00:00:00",
+            "2000-01-01T00:00:00Z", "2000-01-01 00:00:00 UTC", "2000-01-01 00:00:00.0",
+            "2000-01-01T00:00:00.000Z", " 2000-01-01 00:00:00 "}) {
+        EXPECT_EQ(P::parse_epoch(text), y2k) << "'" << text << "'";
+    }
+    EXPECT_EQ(P::parse_epoch("2000-01-01 06:30"), y2k + 6 * 3600 + 30 * 60);
+    EXPECT_EQ(P::parse_epoch("2000-01-01T06:30:15Z"), y2k + 6 * 3600 + 30 * 60 + 15);
+    EXPECT_EQ(P::parse_epoch("2000-01-01 05:00:00+05:00"), y2k);
+    EXPECT_EQ(P::parse_epoch("2000-01-01T00:00:00-0130"), y2k + 5400);
+    EXPECT_EQ(P::parse_epoch("2000-01-01 00:00-23:59"), y2k + 23 * 3600 + 59 * 60);
+    EXPECT_EQ(P::parse_epoch("2000-1-1 0:00"), y2k);
+
+    // epoch_start attributes' dates, with two- or four-digit years
+    EXPECT_EQ(P::parse_epoch("01/01/1970 00:00:00"), 0);
+    EXPECT_EQ(P::parse_epoch("01/01/70 00:00:00"), 0);
+    EXPECT_EQ(P::parse_epoch("1/1/2000"), y2k);
+    EXPECT_EQ(P::parse_epoch("01/02/00 06:30"), y2k + 86400 + 6 * 3600 + 30 * 60);
+    EXPECT_EQ(P::parse_epoch("10/06/2026 00:00:00"), 1791244800);
+
+    // leap days are dates in leap years only
+    EXPECT_EQ(P::parse_epoch("2000-02-29"), y2k + 59 * 86400);
+
+    // trailing text, nonzero fractions, out-of-range fields and dates that
+    // don't exist are not accepted
+    for (const char* text : {"not a date", "2000-01-01 00:00:00 garbage", "2000-01-01 00:00:00.5",
+                             "2000-13-01", "2000-01-01 25:00", "", "2001-02-29", "2000-02-30", "2000-04-31",
+                             "2000-01-01 00:00+24:00", "2000-01-01 00:00-05:60", "02/30/2000 00:00:00",
+                             "01/01/1970 garbage"}) {
+        EXPECT_THROW(P::parse_epoch(text), std::runtime_error) << "'" << text << "'";
+    }
 }
 #endif

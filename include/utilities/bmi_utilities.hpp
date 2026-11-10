@@ -1,13 +1,76 @@
 #ifndef NGEN_BMI_UTILITIES_HPP
 #define NGEN_BMI_UTILITIES_HPP
 
+#include <algorithm>
+#include <cstdint>
+#include <iterator>
+#include <memory>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 #include <boost/type_index.hpp>
-#include "Bmi_Adapter.hpp"
+#include "bmi/Bmi_Adapter.hpp"
+#include "utilities/bmi_primitive_type.hpp"
+
+/*
+ * Typed access to BMI model variables.
+ *
+ * A BMI adapter reports a variable in three ways the standard does not tie together: a type, as a
+ * string; a size, as a count of bytes; and a buffer or pointer carrying no type at all. Reading or
+ * writing one therefore means choosing a C++ type, sizing a buffer, and trusting the two agree.
+ *
+ * A type name is resolved once, to a primitive_type (see bmi_primitive_type.hpp), and that is what
+ * is passed around after.
+ *
+ * Prefer the helpers below to calling Bmi_Adapter::GetValue() or GetValuePtr() and casting the
+ * result:
+ *
+ *   GetValue<T>()         read a variable, or one item of it, converted to T
+ *   GetValuePtr<T>()      borrow the model's own storage, typed
+ *   get_value_as_type()   build a value in the variable's declared type
+ *   get_values_as_type()  build a buffer in the variable's declared type
+ *   resolve_var_type()    the primitive_type to address a variable as, checked against its item size
+ *
+ * The raw adapter calls stay public -- the adapters implement them, and a caller may genuinely want
+ * bytes -- but they are not the ordinary way to read or write a variable.
+ */
 
 namespace models {
     namespace bmi {
+
+        /**
+         * @brief Resolve the type to address a model's variable as, checked against its item size.
+         *
+         * The model's own type name is resolved by its adapter's get_primitive_type(), which may need the
+         * item size to settle it, and the result must then describe that item size exactly.
+         *
+         * @param model The adapter holding the variable.
+         * @param name The name of the variable.
+         * @return The variable's primitive_type, which is as wide as its items.
+         * @throw unknown_bmi_type If no C++ type corresponds to the resolved name.
+         * @throw std::runtime_error If that type is not as wide as the model says the items are.
+         */
+        inline primitive_type resolve_var_type(Bmi_Adapter &model, std::string_view name)
+        {
+            // The adapter calls take the name as a std::string, by value, so make one and hand it on.
+            std::string var_name(name);
+            const size_t item_size = static_cast<size_t>(model.GetVarItemsize(var_name));
+            const std::string reported = model.GetVarType(std::move(var_name));
+            const primitive_type type = model.get_primitive_type(reported, item_size);
+            // Every buffer is sized from the item size and addressed as the type, so a disagreement reads or
+            // writes past the end -- undetectable afterwards, so refuse up front.
+            if (size_of(type) != item_size) {
+                throw std::runtime_error("Cannot use variable '" + std::string(name) + "' of model '" +
+                                         model.get_model_name() + "': its type '" + reported + "' is " +
+                                         std::to_string(size_of(type)) +
+                                         " bytes, but the model reports an item size of " +
+                                         std::to_string(item_size) + " bytes.");
+            }
+            return type;
+        }
+
         namespace helper {
 
             /**
@@ -26,6 +89,93 @@ namespace models {
                 //Let Return Value Optimization (move semantics) help here (no copy of vector)
                 return std::vector<TO>(data, data+count);
             }
+
+        }
+
+        /**
+         * @brief Template function for copying iterator range into contiguous array.
+         *
+         * This function will iterate the range and cast the iterator value to type T
+         * and copy that value into a C-like array of contiguous, dynamically allocated memory.
+         * This array is stored in a smart pointer with a custom array deleter.
+         *
+         * @tparam T
+         * @tparam Iterator
+         * @param begin
+         * @param end
+         * @return std::shared_ptr<T>
+         */
+        template <typename T, typename Iterator>
+        std::shared_ptr<T> as_c_array(Iterator begin, Iterator end){
+            //Make a shared pointer large enough to hold all elements
+            //This is a CONTIGUOUS array of type T
+            //Must provide a custom deleter to delete the array
+            std::shared_ptr<T> ptr( new T[std::distance(begin, end)], [](T *p) { delete[] p; } );
+            std::transform(begin, end, ptr.get(), [](auto const& in){ return static_cast<T>(in); });
+            return ptr;
+        }
+
+        /**
+         * @brief Gets values in iterator range, casted based on @p type then returned as typeless (void) pointer.
+         *
+         * @tparam Iterator
+         * @param type
+         * @param begin
+         * @param end
+         * @return std::shared_ptr<void>
+         */
+        template <typename Iterator>
+        std::shared_ptr<void> get_values_as_type(primitive_type type, Iterator begin, Iterator end)
+        {
+            return with_primitive_type(type, [&]<typename T>() -> std::shared_ptr<void> {
+                return as_c_array<T>(begin, end);
+            });
+        }
+
+        /**
+         * @brief Gets a single value, casted based on @p type then returned as a typeless (void) pointer.
+         *
+         * @tparam T
+         * @param type
+         * @param value
+         * @return std::shared_ptr<void>
+         */
+        template<typename T>
+        std::shared_ptr<void> get_value_as_type(primitive_type type, T value)
+        {
+            return with_primitive_type(type, [&]<typename U>() -> std::shared_ptr<void> {
+                return std::make_shared<U>(static_cast<U>(value));
+            });
+        }
+
+        /**
+         * @brief Get a pointer to a model variable's own storage, addressed as @tparam T.
+         *
+         * The sibling of GetValue() for callers that want the model's memory rather than a copy of it.
+         * Bmi_Adapter exposes the pointer untyped, because BMI has no way to describe what is behind it;
+         * every caller therefore has to supply the type, and nothing in BMI obliges that type to be the
+         * width the model allocated. Indexing with the wrong stride walks off the variable, so the item
+         * size is checked here rather than at each call site.
+         *
+         * An adapter whose language cannot hand out pointers says so from GetValuePtr() itself; this
+         * does not need to know which those are.
+         *
+         * @tparam T The type to address the variable's storage as.
+         * @param model The adapter holding the variable.
+         * @param name The name of the variable.
+         * @return A pointer to the model's own storage, which the model continues to own.
+         * @throw std::runtime_error If the model's items are not @tparam T wide, or it cannot give a pointer.
+         */
+        template <typename T>
+        T *GetValuePtr(Bmi_Adapter &model, const std::string &name)
+        {
+            const size_t item_size = static_cast<size_t>(model.GetVarItemsize(name));
+            if (item_size != sizeof(T)) {
+                throw std::runtime_error("Cannot get pointer to variable " + name + " of model " +
+                                         model.get_model_name() + " as a " + std::to_string(sizeof(T)) +
+                                         " byte type; its items are " + std::to_string(item_size) + " bytes.");
+            }
+            return static_cast<T *>(model.GetValuePtr(name));
         }
 
         /**
@@ -57,9 +207,18 @@ namespace models {
                                          ", Itemsize = "+std::to_string(item_size)+".");
             }
             int num_items = total_mem/item_size;
-            //Determine what type we need to cast from
-            std::string type = model.get_analogous_cxx_type(model.GetVarType(name), item_size);
-            
+            //Determine what type we need to cast from, before the model writes into a buffer sized by it
+            primitive_type type;
+            try {
+                type = resolve_var_type(model, name);
+            } catch (const unknown_bmi_type& e) {
+                // The shared table knows the type name, but not what was being read or as what.
+                throw std::runtime_error("Unable to get value of variable " + name + " of model " +
+                                         model.get_model_name() + " as " +
+                                         boost::typeindex::type_id<T>().pretty_name() +
+                                         ": no logic for converting variable type " + e.type_name);
+            }
+
             //C++ form of malloc
             void* data = ::operator new(total_mem); //Possible to allocate 0 bytes...
             // Use smart pointer to ensure cleanup on throw/out of scope...
@@ -69,55 +228,51 @@ namespace models {
             //Note, may be able to optimize this furthur using GetValuePtr
             //which would avoid copying in the BMI model and copying again here
             model.GetValue(name, data);
-            std::vector<T> result;
 
-            /*
-            * Allows the std::vector constructor to type cast the values as it copies them.
-            * I don't see any other way around the typing issue other than an explicit copy of each...
-            * Now there is an early optimization that allows types that align to pass through uncopied
-            * but that also only works if GetValuePtr returns a compatible pointer that can iterate
-            * on the recieving side correctly.  This may be tricky for certain langague adapters (Fortran?)
-            * Untill this becomes burdensome on memory/time, I suggest copying and converting each value
-            */
+            return with_primitive_type(type, [&]<typename S>() -> std::vector<T> {
+                return helper::make_vector<T>(static_cast<const S*>(data), num_items);
+            });
+        }
 
-            if (type == "long double"){
-                result = helper::make_vector<T>( (long double*) data, num_items);
+        /**
+         * @brief Read one item of a variable from a BMI model adapter, converted to @tparam T.
+         *
+         * The single-item counterpart of the GetValue() above, for callers wanting one value of a
+         * variable that may hold many: the model is asked for that item alone, through its adapter's
+         * GetValueAtIndices(), rather than for a copy of the whole variable.
+         *
+         * @tparam T Type to convert the item to
+         * @param model Bmi model adapter holding the variable
+         * @param name Bmi variable name to query the model for
+         * @param index Index of the item within the variable
+         * @return T The item of variable @p name at @p index
+         * @throw std::out_of_range If @p index is outside the variable.
+         */
+        template <typename T>
+        T GetValue(Bmi_Adapter& model, const std::string& name, int index) {
+            const int item_size = model.GetVarItemsize(name);
+            const int num_items = item_size > 0 ? model.GetVarNbytes(name) / item_size : 0;
+            if (index < 0 || index >= num_items) {
+                throw std::out_of_range("Cannot get item " + std::to_string(index) + " of variable " + name +
+                                        " of model " + model.get_model_name() + ", which has " +
+                                        std::to_string(num_items) + " items.");
             }
-            else if (type == "double"){
-                result = helper::make_vector<T>( (double*) data, num_items);
+
+            primitive_type type;
+            try {
+                type = resolve_var_type(model, name);
+            } catch (const unknown_bmi_type& e) {
+                throw std::runtime_error("Unable to get value of variable " + name + " of model " +
+                                         model.get_model_name() + " as " +
+                                         boost::typeindex::type_id<T>().pretty_name() +
+                                         ": no logic for converting variable type " + e.type_name);
             }
-            else if (type == "float"){
-                result = helper::make_vector<T>( (float*) data, num_items);
-            }
-            else if (type == "short" || type == "short int" || type == "signed short" || type == "signed short int"){
-                result = helper::make_vector<T>( (short*) data, num_items);
-            }
-            else if (type == "unsigned short" || type == "unsigned short int"){
-                result = helper::make_vector<T>( (unsigned short*) data, num_items);
-            }
-            else if (type == "int" || type == "signed" || type == "signed int"){
-                result = helper::make_vector<T>( (int*) data, num_items);
-            }
-            else if (type == "unsigned" || type == "unsigned int"){
-                result = helper::make_vector<T>( (unsigned int*) data, num_items);
-            }
-            else if (type == "long" || type == "long int" || type == "signed long" || type == "signed long int"){
-                result = helper::make_vector<T>( (long*) data, num_items);
-            }
-            else if (type == "unsigned long" || type == "unsigned long int"){
-                result = helper::make_vector<T>( (unsigned long*) data, num_items);
-            }
-            else if (type == "long long" || type == "long long int" || type == "signed long long" || type == "signed long long int"){
-                result = helper::make_vector<T>( (long long*) data, num_items);
-            }
-            else if (type == "unsigned long long" || type == "unsigned long long int"){
-                result = helper::make_vector<T>( (unsigned long long*) data, num_items);
-            }
-            else{
-                throw std::runtime_error("Unable to get value of variable " + name +
-                                " as " + boost::typeindex::type_id<T>().pretty_name() + ": no logic for converting variable type " + type);
-            }
-            return result;
+
+            return with_primitive_type(type, [&]<typename S>() -> T {
+                S item;
+                model.GetValueAtIndices(name, &item, &index, 1);
+                return static_cast<T>(item);
+            });
         }
     }
 }

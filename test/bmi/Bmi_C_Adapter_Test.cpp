@@ -147,6 +147,17 @@ TEST_F(Bmi_C_Adapter_Test, GetValue_0_a) {
     ASSERT_EQ(value, retrieved);
 }
 
+/** Test that one item of a variable can be read by index through the shared helper. */
+TEST_F(Bmi_C_Adapter_Test, GetValue_at_index_0_a) {
+    adapter->Initialize();
+    double value = 5.0;
+    adapter->SetValue("INPUT_VAR_1", &value);
+    const double retrieved = GetValue<double>(*adapter, "INPUT_VAR_1", 0);
+    EXPECT_THROW(GetValue<double>(*adapter, "INPUT_VAR_1", 1), std::out_of_range);
+    adapter->Finalize();
+    EXPECT_EQ(value, retrieved);
+}
+
 /** Test that both the get value function works for input 2. */
 TEST_F(Bmi_C_Adapter_Test, GetValue_0_b) {
     adapter->Initialize();
@@ -245,7 +256,7 @@ TEST_F(Bmi_C_Adapter_Test, GetValue_0_d) {
 /** Test that both the get value pointer function works for input 1. */
 TEST_F(Bmi_C_Adapter_Test, GetValuePtr_0_a) {
     adapter->Initialize();
-    double* in_1_ptr = adapter->GetValuePtr<double>("INPUT_VAR_1");
+    double* in_1_ptr = models::bmi::GetValuePtr<double>(*adapter, "INPUT_VAR_1");
     model_data* model = friend_get_model_data_struct(adapter.get());
     ASSERT_EQ(model->input_var_1, in_1_ptr);
     adapter->Finalize();
@@ -255,7 +266,7 @@ TEST_F(Bmi_C_Adapter_Test, GetValuePtr_0_a) {
 TEST_F(Bmi_C_Adapter_Test, GetValuePtr_0_b) {
     adapter->Initialize();
     double value = 6.0;
-    double* in_2_ptr = adapter->GetValuePtr<double>("INPUT_VAR_2");
+    double* in_2_ptr = models::bmi::GetValuePtr<double>(*adapter, "INPUT_VAR_2");
     *in_2_ptr = value;
     ASSERT_EQ(value, GetValue<double>(*adapter, "INPUT_VAR_2")[0]);
     adapter->Finalize();
@@ -264,7 +275,7 @@ TEST_F(Bmi_C_Adapter_Test, GetValuePtr_0_b) {
 /** Test that both the get value pointer function works for output 1 and gets the right pointer. */
 TEST_F(Bmi_C_Adapter_Test, GetValuePtr_0_c) {
     adapter->Initialize();
-    double* out_1_ptr = adapter->GetValuePtr<double>("OUTPUT_VAR_1");
+    double* out_1_ptr = models::bmi::GetValuePtr<double>(*adapter, "OUTPUT_VAR_1");
     double value_1 = 6.0;
     adapter->SetValue("INPUT_VAR_1", &value_1);
     adapter->SetValue("INPUT_VAR_2", &value_1);
@@ -285,7 +296,7 @@ TEST_F(Bmi_C_Adapter_Test, GetValuePtr_0_c) {
 /** Test that both the get value pointer function works for output 2 and gets the right pointer. */
 TEST_F(Bmi_C_Adapter_Test, GetValuePtr_0_d) {
     adapter->Initialize();
-    double* out_2_ptr = adapter->GetValuePtr<double>("OUTPUT_VAR_2");
+    double* out_2_ptr = models::bmi::GetValuePtr<double>(*adapter, "OUTPUT_VAR_2");
     double value_1 = 6.0;
     adapter->SetValue("INPUT_VAR_1", &value_1);
     adapter->SetValue("INPUT_VAR_2", &value_1);

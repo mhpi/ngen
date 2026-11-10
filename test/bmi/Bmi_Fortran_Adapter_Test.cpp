@@ -5,12 +5,15 @@
 #include <exception>
 #include <chrono>
 #include <unordered_map>
+#include <limits>
 #include <numeric>
+#include <tuple>
 
 #include "FileChecker.h"
 #include "Bmi_Fortran_Adapter.hpp"
 #include "State_Exception.hpp"
 #include "bmi_utilities.hpp"
+#include "primitive_type_printing.hpp"
 
 #ifndef BMI_TEST_FORTRAN_LOCAL_LIB_NAME
 #ifdef __APPLE__
@@ -1118,6 +1121,44 @@ TEST_F(Bmi_Fortran_Adapter_Test, GetValue_1_a) {
     ASSERT_EQ(data, retrieved);
 }
 
+/** Test that items of a gridded variable can be got by index, in the order requested. */
+TEST_F(Bmi_Fortran_Adapter_Test, GetValueAtIndices_0_a) {
+    adapter->Initialize();
+    std::vector<int> shape = {2,3};
+    adapter->SetValue("grid_1_shape", shape.data());
+    std::vector<double> data = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+    adapter->SetValue("GRID_VAR_1", data.data());
+
+    std::vector<int> inds = {4, 0, 5};
+    std::vector<double> retrieved(inds.size());
+    adapter->GetValueAtIndices("GRID_VAR_1", retrieved.data(), inds.data(), inds.size());
+
+    std::vector<int> outside = {6};
+    double unused;
+    EXPECT_THROW(adapter->GetValueAtIndices("GRID_VAR_1", &unused, outside.data(), 1), std::out_of_range);
+    adapter->Finalize();
+    EXPECT_EQ(retrieved, (std::vector<double>{5.0, 1.0, 6.0}));
+}
+
+/** Test that one item of a variable can be read by index through the shared helper, at the variable's width. */
+TEST_F(Bmi_Fortran_Adapter_Test, GetValue_at_index_0_a) {
+    adapter->Initialize();
+    std::vector<int> shape = {2,3};
+    adapter->SetValue("grid_1_shape", shape.data());
+    std::vector<double> data = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+    adapter->SetValue("GRID_VAR_1", data.data());
+    double wide = 1.000000000001;
+    adapter->SetValue("test::real_kind8", &wide);
+
+    const double fifth = GetValue<double>(*adapter, "GRID_VAR_1", 4);
+    const double widened = GetValue<double>(*adapter, "test::real_kind8", 0);
+    EXPECT_THROW(GetValue<double>(*adapter, "GRID_VAR_1", 6), std::out_of_range);
+    adapter->Finalize();
+
+    EXPECT_EQ(fifth, 5.0);
+    EXPECT_EQ(widened, wide);
+}
+
 /** Test that gridded data can be set and retrieved for grid var 3 in (x,y,z) order*/
 TEST_F(Bmi_Fortran_Adapter_Test, GetValue_1_b) {
     adapter->Initialize();
@@ -1346,6 +1387,121 @@ TEST_F(Bmi_Fortran_Adapter_Test, SetValue_0_c) {
     double retrieved = GetValue<double>(*adapter, "INPUT_VAR_1")[0];
     adapter->Finalize();
     ASSERT_EQ(value_2, retrieved);
+}
+
+/**
+ * Test that a Fortran type name is resolved by item size, not taken at its word.
+ *
+ * Compiler flags such as ``-fdefault-real-8`` change the width of ``real`` and ``integer``, so the name only says
+ * whether a variable is integral or floating point.
+ */
+TEST_F(Bmi_Fortran_Adapter_Test, get_primitive_type_0_a) {
+    using models::bmi::primitive_type;
+    const std::vector<std::tuple<std::string, size_t, primitive_type>> cases = {
+        {"integer", 1, primitive_type::i8},
+        {"integer", 2, primitive_type::i16},
+        {"integer", 4, primitive_type::i32},
+        {"integer", 8, primitive_type::i64},
+        {"int", 8, primitive_type::i64},
+        {"real", 4, primitive_type::f32},
+        {"real", 8, primitive_type::f64},
+        {"float", 8, primitive_type::f64},
+        {"double precision", 8, primitive_type::f64},
+    };
+    for (const auto &[name, item_size, expected] : cases) {
+        const primitive_type resolved = adapter->get_primitive_type(name, item_size);
+        EXPECT_EQ(resolved, expected) << name << " of " << item_size << " bytes";
+        EXPECT_EQ(models::bmi::size_of(resolved), item_size) << name;
+    }
+}
+
+/** Test that names it does not reduce, and sizes with no type of the named kind, are resolved as named. */
+TEST_F(Bmi_Fortran_Adapter_Test, get_primitive_type_0_b) {
+    using models::bmi::primitive_type;
+    EXPECT_EQ(adapter->get_primitive_type("long", sizeof(long)), models::bmi::primitive_type_of<long>());
+    EXPECT_EQ(adapter->get_primitive_type("int64_t", 8), primitive_type::i64);
+    EXPECT_EQ(adapter->get_primitive_type("integer", 3), primitive_type::i32);
+    EXPECT_EQ(adapter->get_primitive_type("real", 3), primitive_type::f32);
+    EXPECT_THROW(adapter->get_primitive_type("nonesuch", 4), models::bmi::unknown_bmi_type);
+
+    // Resolved as named, a disagreeing pair is then refused by the size check.
+    EXPECT_NE(models::bmi::size_of(adapter->get_primitive_type("real", 3)), 3u);
+}
+
+/**
+ * Test that a double precision reported narrower than 8 bytes is resolved as named, not taken for a float.
+ *
+ * That is far likelier a module misreporting its type or its size than a real 4-byte double, and resolved as named it
+ * is refused by the size check, rather than by an accessor the module does not serve.
+ */
+TEST_F(Bmi_Fortran_Adapter_Test, get_primitive_type_0_e) {
+    using models::bmi::primitive_type;
+    EXPECT_EQ(adapter->get_primitive_type("double precision", 4), primitive_type::f64);
+    EXPECT_EQ(adapter->get_primitive_type("double", 4), primitive_type::f64);
+
+    EXPECT_NE(models::bmi::size_of(adapter->get_primitive_type("double precision", 4)), 4u);
+}
+
+/**
+ * Test that a 16-byte real resolves to f128 only where long double is IEEE binary128.
+ *
+ * On x86, gfortran's 80-bit real(kind=10) is also stored in 16 bytes, so there the size cannot tell it from
+ * real(kind=16), and the name is resolved as named, for the size check to refuse rather than guess.
+ */
+TEST_F(Bmi_Fortran_Adapter_Test, get_primitive_type_0_c) {
+    using models::bmi::primitive_type;
+    EXPECT_EQ(adapter->get_primitive_type("real", 16),
+              models::bmi::long_double_is_float128 ? primitive_type::f128 : primitive_type::f32);
+}
+
+/**
+ * Test that a module can name ``long double`` outright, for a variable of kind c_long_double.
+ *
+ * That is the spelling that resolves where a 16-byte real alone is ambiguous, to the platform's long double, and the
+ * size check still refuses it if the reported size disagrees.
+ */
+TEST_F(Bmi_Fortran_Adapter_Test, get_primitive_type_0_d) {
+    using models::bmi::primitive_type;
+    const primitive_type resolved = adapter->get_primitive_type("long double", sizeof(long double));
+    EXPECT_EQ(resolved, primitive_type::long_double);
+    EXPECT_EQ(models::bmi::size_of(resolved), sizeof(long double));
+
+    EXPECT_NE(models::bmi::size_of(adapter->get_primitive_type("long double", 3)), 3u);
+}
+
+/** Test that a 'real' the module reports as 8 bytes wide is set and read back at that width. */
+TEST_F(Bmi_Fortran_Adapter_Test, SetValue_GetValue_widened_real_0_a) {
+    const std::string name = "test::real_kind8";
+    adapter->Initialize();
+    ASSERT_EQ(adapter->GetVarType(name), "real");
+    ASSERT_EQ(adapter->GetVarItemsize(name), 8);
+
+    // Not representable as a float, so a 4-byte path anywhere would change it.
+    const double value = 1.000000000001;
+    ASSERT_NE(static_cast<double>(static_cast<float>(value)), value);
+
+    double src = value;
+    adapter->SetValue(name, &src);
+    double dest = 0;
+    adapter->GetValue(name, &dest);
+    const double via_utilities = GetValue<double>(*adapter, name)[0];
+    adapter->Finalize();
+
+    EXPECT_EQ(dest, value);
+    EXPECT_EQ(via_utilities, value);
+}
+
+/** Test that an 'integer' the module reports as 8 bytes wide is refused, since the shim has no accessor that wide. */
+TEST_F(Bmi_Fortran_Adapter_Test, SetValue_GetValue_widened_integer_0_a) {
+    const std::string name = "test::integer_kind8";
+    adapter->Initialize();
+    ASSERT_EQ(adapter->GetVarType(name), "integer");
+    ASSERT_EQ(adapter->GetVarItemsize(name), 8);
+
+    std::int64_t value = 1;
+    EXPECT_THROW(adapter->SetValue(name, &value), ::external::ExternalIntegrationException);
+    EXPECT_THROW(adapter->GetValue(name, &value), ::external::ExternalIntegrationException);
+    adapter->Finalize();
 }
 
 /** Test that getting the current model time works after initialization. */

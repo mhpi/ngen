@@ -19,7 +19,7 @@ namespace realization {
 
     public:
 
-        Bmi_Fortran_Formulation(std::string id, std::shared_ptr<data_access::GenericDataProvider> forcing, utils::StreamHandler output_stream);
+        Bmi_Fortran_Formulation(std::string id, std::shared_ptr<data_access::GenericDataProvider> forcing);
 
         std::string get_formulation_type() const override;
 
@@ -42,8 +42,6 @@ namespace realization {
         time_t convert_model_time(const double &model_time) const override {
             return (time_t) (get_bmi_model()->convert_model_time_to_seconds(model_time));
         }
-
-        double get_var_value_as_double(const int &index, const std::string &var_name) override;
 
         // Unit test access
         friend class ::Bmi_Multi_Formulation_Test;

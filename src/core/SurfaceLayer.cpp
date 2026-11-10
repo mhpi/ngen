@@ -24,7 +24,9 @@ void ngen::SurfaceLayer::update_models(boost::span<double> catchment_outflows,
 
     // On the first time step, check all the nexuses and warn user about ones have no contributing catchments
     if (current_time_index == 0) {
-        for(const auto& id : features.nexuses()) {
+        auto nexuses_iterator = features.nexuses();
+        nexuses.reserve(size(nexuses_iterator));
+        for(const auto& id : nexuses_iterator) {
             #if NGEN_WITH_MPI
             // When running with MPI, only be concerned with the local nexuses
             if (!features.is_remote_sender_nexus(id) && features.nexus_at(id)->get_contributing_catchments().size() == 0)
@@ -35,15 +37,23 @@ void ngen::SurfaceLayer::update_models(boost::span<double> catchment_outflows,
                 // Likely this means a flow value of 0.0, but that's dependent on the nexus class implementation
                 std::cout << "WARNING: Nexus "<< id << " has no contributing catchments for flow values!" << std::endl;
             }
+            nexuses.push_back(features.nexus_at(id));
         }
     }
 
+    std::unique_ptr<utils::FormulationStepOutput> step_output;
+    if (nexus_outputs_mgr) {
+        // TODO: (later) eventually may want to use this form, if we support multiple formulations per catchment
+        //step_output = nexus_outputs_mgr->prepare_for_step(form_id, current_time_marker);
+        step_output = nexus_outputs_mgr->prepare_for_step(current_time_marker);
+    }
+
     // Once contributing catchments are updated for this timestep, dump the nexus output
-    for(const auto& id : features.nexuses()) 
+    for(const auto& nexus : nexuses)
     {
         // Get the correct "requesting" id for downstream_flow
-        const auto& nexus = features.nexus_at(id);
         const auto& cat_ids = nexus->get_receiving_catchments();
+        const auto& id = nexus->get_id();
 
         if (cat_ids.size() > 1) {
             std::string error = "Nexus '" + id + "' violates dendritic hydrofabric network assumption";
@@ -68,10 +78,8 @@ void ngen::SurfaceLayer::update_models(boost::span<double> catchment_outflows,
         nexus_downstream_flows[nexus_index] += contribution_at_t;
 #endif // NGEN_WITH_ROUTING && NGEN_WITH_ROUTING_TROUTE_BMI
 
-        // TODO: (later) eventually may want to use this form, if we support multiple formulations per catchment
-        //nexus_outputs_mgr->receive_data_entry(form_id, id, current_time_index, current_timestamp, contribution_at_t);
-        if (nexus_outputs_mgr) {
-            nexus_outputs_mgr->receive_data_entry(id, current_time_marker, contribution_at_t);
+        if (step_output) {
+            step_output->receive_data_entry(id, contribution_at_t);
         }
 
         // Release this nexus's accumulated per-timestep state to bound memory on

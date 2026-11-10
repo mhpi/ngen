@@ -15,9 +15,14 @@
 
 #include "Bmi_Module_Formulation.hpp"
 #include "Bmi_C_Formulation.hpp"
+#include "utilities/bmi/mass_balance.hpp"
 #include "gtest/gtest.h"
 #include "gmock/gmock.h"
+#include <cstdio>
+#include <ctime>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <vector>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -83,7 +88,7 @@ protected:
     }
 
     static double get_friend_var_value_as_double(Bmi_C_Formulation& formulation, const std::string& var_name) {
-        return formulation.get_var_value_as_double(0, var_name);
+        return models::bmi::GetValue<double>(*formulation.get_bmi_model(), var_name, 0);
     }
 
     static time_t parse_forcing_time(const std::string& date_time_str) {
@@ -237,7 +242,6 @@ void Bmi_C_Formulation_Test::SetUp() {
                          // Add this predetermined substring from above (which could be empty)
                          + cache_metadata_substr +
 
-                         "                \"" + BMI_REALIZATION_CFG_PARAM_OPT__OUTPUT_PRECISION + "\": 6, "
                          "                \"" + BMI_REALIZATION_CFG_PARAM_OPT__VAR_STD_NAMES + "\": { "
                          "                      \"INPUT_VAR_2\": \"" + AORC_FIELD_NAME_TEMP_2M_AG + "\","
                          "                      \"INPUT_VAR_1\": \"" + AORC_FIELD_NAME_PRECIP_RATE + "\""
@@ -272,7 +276,7 @@ void Bmi_C_Formulation_Test::TearDown() {
 TEST_F(Bmi_C_Formulation_Test, Initialize_0_a) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     ASSERT_EQ(get_friend_model_type_name(formulation), model_type_name[ex_index]);
@@ -284,7 +288,7 @@ TEST_F(Bmi_C_Formulation_Test, Initialize_0_a) {
 TEST_F(Bmi_C_Formulation_Test, Initialize_0_b) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     ASSERT_FALSE(get_friend_cache_input_variable_metadata(formulation));
@@ -292,10 +296,10 @@ TEST_F(Bmi_C_Formulation_Test, Initialize_0_b) {
 
 /** Test to make sure we can initialize multiple model instances with dynamic loading. */
 TEST_F(Bmi_C_Formulation_Test, Initialize_1_a) {
-    Bmi_C_Formulation form_1(catchment_ids[0], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[0]), utils::StreamHandler());
+    Bmi_C_Formulation form_1(catchment_ids[0], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[0]));
     form_1.create_formulation(config_prop_ptree[0]);
 
-    Bmi_C_Formulation form_2(catchment_ids[1], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[1]), utils::StreamHandler());
+    Bmi_C_Formulation form_2(catchment_ids[1], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[1]));
     form_2.create_formulation(config_prop_ptree[1]);
 
     std::vector<std::string> header_1, header_2;
@@ -310,7 +314,7 @@ TEST_F(Bmi_C_Formulation_Test, Initialize_1_a) {
 TEST_F(Bmi_C_Formulation_Test, Initialize_1_b) {
     int ex_index = 1;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     ASSERT_FALSE(get_friend_cache_input_variable_metadata(formulation));
@@ -320,7 +324,7 @@ TEST_F(Bmi_C_Formulation_Test, Initialize_1_b) {
 TEST_F(Bmi_C_Formulation_Test, Initialize_2_a) {
     int ex_index = 2;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     ASSERT_EQ(get_friend_model_type_name(formulation), model_type_name[ex_index]);
@@ -332,7 +336,7 @@ TEST_F(Bmi_C_Formulation_Test, Initialize_2_a) {
 TEST_F(Bmi_C_Formulation_Test, Initialize_2_b) {
     int ex_index = 2;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     ASSERT_TRUE(get_friend_cache_input_variable_metadata(formulation));
@@ -342,7 +346,7 @@ TEST_F(Bmi_C_Formulation_Test, Initialize_2_b) {
 TEST_F(Bmi_C_Formulation_Test, GetResponse_0_a) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     double response = formulation.get_response(0, 3600);
@@ -353,7 +357,7 @@ TEST_F(Bmi_C_Formulation_Test, GetResponse_0_a) {
 TEST_F(Bmi_C_Formulation_Test, set_initial_parameters_0_a) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     static std::shared_ptr<models::bmi::Bmi_C_Adapter> bmi_c_adapter;
@@ -372,7 +376,7 @@ TEST_F(Bmi_C_Formulation_Test, set_initial_parameters_0_a) {
 TEST_F(Bmi_C_Formulation_Test, GetResponse_0_b) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     double response;
@@ -387,7 +391,7 @@ TEST_F(Bmi_C_Formulation_Test, GetResponse_0_b) {
 TEST_F(Bmi_C_Formulation_Test, GetResponse_0_c) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     double response;
@@ -401,10 +405,10 @@ TEST_F(Bmi_C_Formulation_Test, GetResponse_0_c) {
 
 /** Test to make sure we can execute multiple model instances with dynamic loading. */
 TEST_F(Bmi_C_Formulation_Test, GetResponse_1_a) {
-    Bmi_C_Formulation form_1(catchment_ids[0], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[0]), utils::StreamHandler());
+    Bmi_C_Formulation form_1(catchment_ids[0], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[0]));
     form_1.create_formulation(config_prop_ptree[0]);
 
-    Bmi_C_Formulation form_2(catchment_ids[1], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[1]), utils::StreamHandler());
+    Bmi_C_Formulation form_2(catchment_ids[1], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[1]));
     form_2.create_formulation(config_prop_ptree[1]);
 
     double response_1, response_2;
@@ -420,7 +424,7 @@ TEST_F(Bmi_C_Formulation_Test, GetResponse_1_a) {
 TEST_F(Bmi_C_Formulation_Test, GetResponse_2_b) {
     int ex_index = 2;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     double response;
@@ -436,7 +440,7 @@ TEST_F(Bmi_C_Formulation_Test, GetResponse_2_b) {
 TEST_F(Bmi_C_Formulation_Test, GetResponse_2_c) {
     int ex_index = 2;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     double response;
@@ -456,7 +460,7 @@ TEST_F(Bmi_C_Formulation_Test, GetResponse_2_c) {
 TEST_F(Bmi_C_Formulation_Test, bmi_input_var_details_2_a) {
     int ex_index = 2;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     double response;
@@ -485,10 +489,10 @@ TEST_F(Bmi_C_Formulation_Test, bmi_input_var_details_2_a) {
 TEST_F(Bmi_C_Formulation_Test, bmi_input_var_details_2_b) {
     int ex_index = 2;
 
-    Bmi_C_Formulation formulation_1(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation_1(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation_1.create_formulation(config_prop_ptree[ex_index]);
 
-    Bmi_C_Formulation formulation_2(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation_2(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation_2.create_formulation(config_prop_ptree[ex_index]);
 
     // Advance only one to start with
@@ -531,10 +535,10 @@ TEST_F(Bmi_C_Formulation_Test, bmi_input_var_details_2_b) {
 TEST_F(Bmi_C_Formulation_Test, bmi_input_var_details_2_c) {
     int ex_index = 2;
 
-    Bmi_C_Formulation formulation_1(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation_1(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation_1.create_formulation(config_prop_ptree[ex_index]);
 
-    Bmi_C_Formulation formulation_2(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation_2(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation_2.create_formulation(config_prop_ptree[ex_index]);
 
     for (int i = 0; i < 10; i++) {
@@ -572,13 +576,13 @@ TEST_F(Bmi_C_Formulation_Test, cache_matches_refetch_2_a) {
     int ex_index = 2;
 
     // Cached formulation directly from the example 2 config (which enables caching).
-    Bmi_C_Formulation cached(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation cached(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     cached.create_formulation(config_prop_ptree[ex_index]);
     ASSERT_TRUE(get_friend_cache_input_variable_metadata(cached));
 
     // Same config, but with caching disabled so the full-refetch path is exercised instead.  The flag is
     // overridden before the first response, since metadata is initialized lazily on that first call.
-    Bmi_C_Formulation refetch(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation refetch(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     refetch.create_formulation(config_prop_ptree[ex_index]);
     set_friend_cache_input_variable_metadata(refetch, false);
     ASSERT_FALSE(get_friend_cache_input_variable_metadata(refetch));
@@ -592,7 +596,7 @@ TEST_F(Bmi_C_Formulation_Test, cache_matches_refetch_2_a) {
 TEST_F(Bmi_C_Formulation_Test, GetOutputLineForTimestep_0_a) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     formulation.get_response(0, 3600);
@@ -604,7 +608,7 @@ TEST_F(Bmi_C_Formulation_Test, GetOutputLineForTimestep_0_a) {
 TEST_F(Bmi_C_Formulation_Test, GetOutputLineForTimestep_1_a) {
     int ex_index = 1;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     // ex_index=1 configures output_variables as [OUTPUT_VAR_2, OUTPUT_VAR_1], so the values come out in
@@ -619,7 +623,7 @@ TEST_F(Bmi_C_Formulation_Test, GetOutputLineForTimestep_1_a) {
 TEST_F(Bmi_C_Formulation_Test, GetOutputLineForTimestep_1_b) {
     int ex_index = 1;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     int i = 0;
@@ -634,7 +638,7 @@ TEST_F(Bmi_C_Formulation_Test, GetOutputLineForTimestep_1_b) {
 TEST_F(Bmi_C_Formulation_Test, GetOutputLineForTimestep_2_b) {
     int ex_index = 2;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
 
     int i = 0;
@@ -651,7 +655,7 @@ TEST_F(Bmi_C_Formulation_Test, GetOutputLineForTimestep_2_b) {
 TEST_F(Bmi_C_Formulation_Test, determine_model_time_offset_0_a) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
     std::shared_ptr<models::bmi::Bmi_C_Adapter> model_adapter = get_friend_bmi_model(formulation);
 
@@ -662,7 +666,7 @@ TEST_F(Bmi_C_Formulation_Test, determine_model_time_offset_0_a) {
 TEST_F(Bmi_C_Formulation_Test, determine_model_time_offset_0_b) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
     std::shared_ptr<models::bmi::Bmi_C_Adapter> model_adapter = get_friend_bmi_model(formulation);
     time_t forcing_start = get_friend_forcing_start_time(formulation);
@@ -673,7 +677,7 @@ TEST_F(Bmi_C_Formulation_Test, determine_model_time_offset_0_b) {
 TEST_F(Bmi_C_Formulation_Test, determine_model_time_offset_0_c) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
     std::shared_ptr<models::bmi::Bmi_C_Adapter> model_adapter = get_friend_bmi_model(formulation);
 
@@ -695,7 +699,7 @@ using models::bmi::protocols::ProtocolError;
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
     // mass balance failure will throw an exception
     ptree.put_child("mass_balance", MassBalanceMock(true).get());
@@ -708,7 +712,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_warns) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
     ptree.put_child("mass_balance", MassBalanceMock(false).get());
     formulation.create_formulation(ptree);
@@ -727,7 +731,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_warns) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_stored_fails) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
     ptree.put_child("mass_balance", MassBalanceMock(true).get());
     formulation.create_formulation(ptree);
@@ -749,7 +753,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_stored_fails) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_in_fails_a) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
     ptree.put_child("mass_balance", MassBalanceMock(true, 1e-5).get());
     formulation.create_formulation(ptree);
@@ -769,7 +773,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_in_fails_a) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_out_fails) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
     ptree.put_child("mass_balance", MassBalanceMock(true).get());
     formulation.create_formulation(ptree);
@@ -789,7 +793,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_out_fails) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_leaked_fails) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
     ptree.put_child("mass_balance", MassBalanceMock(true).get());
     formulation.create_formulation(ptree);
@@ -809,7 +813,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_leaked_fails) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_tolerance) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
     ptree.put_child("mass_balance", MassBalanceMock(true, 1e-5).get());
     formulation.create_formulation(ptree);
@@ -832,7 +836,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_tolerance) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_tolerance_a) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
     ptree.put_child("mass_balance", MassBalanceMock(true, 1e-5).get());
     formulation.create_formulation(ptree);
@@ -848,7 +852,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_tolerance_a) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_off) {
     int ex_index = 1;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     formulation.create_formulation(config_prop_ptree[ex_index]);
     formulation.check_mass_balance(0, 2, "t0");
     formulation.get_response(1, 3600);
@@ -858,7 +862,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_off) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_missing) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
  
     std::string catchment_path = "catchments." + catchment_ids[ex_index] + ".bmi_c";
@@ -877,7 +881,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_missing) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_frequency) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
     ptree.put_child("mass_balance", MassBalanceMock(true, 1e-5, 2).get());
     formulation.create_formulation(ptree);
@@ -901,7 +905,7 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_frequency) {
 TEST_F(Bmi_C_Formulation_Test, check_mass_balance_frequency_1) {
     int ex_index = 0;
 
-    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]), utils::StreamHandler());
+    Bmi_C_Formulation formulation(catchment_ids[ex_index], std::make_shared<CsvPerFeatureForcingProvider>(*forcing_params_examples[ex_index]));
     auto ptree = config_prop_ptree[ex_index];
     ptree.put_child("mass_balance", MassBalanceMock(true, 1e-5, -1).get());
     formulation.create_formulation(ptree);
@@ -921,6 +925,245 @@ TEST_F(Bmi_C_Formulation_Test, check_mass_balance_frequency_1) {
     // timestep (current_time_step == total_steps - 1) and the violation
     // should now be observable.
     ASSERT_THROW(formulation.check_mass_balance(2, 3, "t2"), ProtocolError);
+}
+
+/**
+ * Restoring a state that carries the model clock must not shift forcing reads.
+ *
+ * test_bmi_c serializes its current time, and OUTPUT_VAR_2 echoes the hourly
+ * temperature forcing, so a misaligned forcing read shows up directly in the
+ * response. A first-half run (00:00 -> 12:00) saves after its last step; restored
+ * runs are compared against an uninterrupted 00:00 -> 24:00 run at the same times.
+ *
+ * Only forcing alignment is checked. Whether the restored state belongs at the
+ * new run's start time is a separate question these tests don't cover.
+ */
+class Bmi_C_Formulation_Restore_Clock_Test : public Bmi_C_Formulation_Test {
+protected:
+    static constexpr const char* DAY_START = "2015-12-01 00:00:00";
+    static constexpr const char* MIDDAY    = "2015-12-01 12:00:00";
+    static constexpr const char* DAY_END   = "2015-12-02 00:00:00";
+    static constexpr realization::Formulation::time_step_t DT = 3600;
+
+    void SetUp() override {
+        Bmi_C_Formulation_Test::SetUp();
+        checkpoint = ::testing::TempDir() + "bmi_c_restore_clock_" +
+                     ::testing::UnitTest::GetInstance()->current_test_info()->name() + ".ckpt";
+        std::remove(checkpoint.c_str());
+    }
+
+    void TearDown() override {
+        std::remove(checkpoint.c_str());
+        Bmi_C_Formulation_Test::TearDown();
+    }
+
+    static std::string format_time(time_t t) {
+        std::tm tm{};
+        gmtime_r(&t, &tm);
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
+        return buf;
+    }
+
+    /** test_bmi_c over [start, end) with optional "serialization" and "model_params" blocks (JSON object text).
+     *  model_params are applied via SetValue before the restore runs. */
+    std::unique_ptr<Bmi_C_Formulation> make_formulation(const std::string& start, const std::string& end,
+                                                        const std::string& serialization = "",
+                                                        const std::string& model_params = "") {
+        std::string json =
+            "{"
+            "  \"model_type_name\": \"test_bmi_c\","
+            "  \"library_file\": \"" + lib_file[0] + "\","
+            "  \"init_config\": \"" + init_config[0] + "\","
+            "  \"main_output_variable\": \"OUTPUT_VAR_2\","
+            "  \"registration_function\": \"register_bmi\","
+            "  \"uses_forcing_file\": false,"
+            "  \"" BMI_REALIZATION_CFG_PARAM_OPT__VAR_STD_NAMES "\": {"
+            "      \"INPUT_VAR_2\": \"" AORC_FIELD_NAME_TEMP_2M_AG "\","
+            "      \"INPUT_VAR_1\": \"" AORC_FIELD_NAME_PRECIP_RATE "\""
+            "  }" +
+            (serialization.empty() ? std::string() : ", \"serialization\": " + serialization) +
+            (model_params.empty() ? std::string() : ", \"model_params\": " + model_params) +
+            "}";
+        std::stringstream stream(json);
+        boost::property_tree::ptree tree;
+        boost::property_tree::json_parser::read_json(stream, tree);
+        auto provider = std::make_shared<CsvPerFeatureForcingProvider>(
+            forcing_params(forcing_file[0], "legacy", start, end));
+        auto formulation = std::make_unique<Bmi_C_Formulation>(catchment_ids[0], provider);
+        formulation->create_formulation(tree);
+        return formulation;
+    }
+
+    /** Responses of an uninterrupted DAY_START -> DAY_END run, keyed by step start time. */
+    std::map<time_t, double> reference_run() {
+        auto formulation = make_formulation(DAY_START, DAY_END);
+        std::map<time_t, double> responses;
+        const time_t start = parse_forcing_time(DAY_START);
+        for (int i = 0; i < 24; ++i) {
+            responses[start + i * DT] = formulation->get_response(i, DT);
+        }
+        return responses;
+    }
+
+    /** DAY_START -> MIDDAY, saving every `frequency` steps (-1: only after the last step).
+     *  Records are stamped with each step's output time, as Layer does. Returns each step's response. */
+    std::vector<double> save_first_half(int frequency = -1) {
+        auto formulation = make_formulation(DAY_START, MIDDAY,
+            "{\"path\": \"" + checkpoint + "\", \"save\": {\"frequency\": " + std::to_string(frequency) +
+            ", \"fatal\": true}}");
+        const time_t start = parse_forcing_time(DAY_START);
+        std::vector<double> responses;
+        for (int i = 0; i < 12; ++i) {
+            responses.push_back(formulation->get_response(i, DT));
+            formulation->checkpoint_state(i, 12, format_time(start + i * DT));
+        }
+        return responses;
+    }
+
+    /** Restore by "latest", or by an explicit timestamp when one is given. */
+    std::string restore_block(bool fatal = true, const std::string& timestamp = "") const {
+        const std::string select =
+            timestamp.empty() ? "\"step\": \"latest\"" : "\"timestamp\": \"" + timestamp + "\"";
+        return "{\"path\": \"" + checkpoint + "\", \"restore\": {" + select + ", \"fatal\": " +
+               (fatal ? "true" : "false") + "}}";
+    }
+
+    /** Same conversion as Bmi_C_Formulation::convert_model_time, which is protected. */
+    static time_t model_time_seconds(Bmi_C_Formulation& formulation, double model_time) {
+        return (time_t) get_friend_bmi_model(formulation)->convert_model_time_to_seconds(model_time);
+    }
+
+    /** Forcing reads for the first step map to the run's start time. */
+    void expect_forcing_anchored_to_start(Bmi_C_Formulation& formulation, const std::string& start) {
+        EXPECT_EQ(model_time_seconds(formulation, formulation.get_model_current_time()) +
+                      get_friend_bmi_model_start_time_forcing_offset_s(formulation),
+                  parse_forcing_time(start));
+    }
+
+    /** Restore into [start, end) and compare every step against the reference run. */
+    void expect_restored_run_matches_reference(const std::string& start, const std::string& end, int steps) {
+        const auto reference = reference_run();
+        save_first_half();
+
+        auto restored = make_formulation(start, end, restore_block());
+        auto model = get_friend_bmi_model(*restored);
+        ASSERT_NE(model->GetCurrentTime(), model->GetStartTime())
+            << "restore did not move the model clock, so this test would not exercise re-anchoring";
+        expect_forcing_anchored_to_start(*restored, start);
+
+        const time_t t0 = parse_forcing_time(start);
+        for (int i = 0; i < steps; ++i) {
+            EXPECT_DOUBLE_EQ(restored->get_response(i, DT), reference.at(t0 + i * DT))
+                << "step " << i << " (" << format_time(t0 + i * DT) << ")";
+        }
+    }
+
+    std::string checkpoint;
+};
+
+/** Resume where the saving run stopped (start == the restored state's time). */
+TEST_F(Bmi_C_Formulation_Restore_Clock_Test, RestoredClock_StartAtSavePoint) {
+    expect_restored_run_matches_reference(MIDDAY, DAY_END, 12);
+}
+
+/** Start before the restored state's time; forcings must follow the new run's clock. */
+TEST_F(Bmi_C_Formulation_Restore_Clock_Test, RestoredClock_StartBeforeSavePoint) {
+    expect_restored_run_matches_reference(DAY_START, MIDDAY, 12);
+}
+
+/** Start after the restored state's time; forcings must follow the new run's clock. */
+TEST_F(Bmi_C_Formulation_Restore_Clock_Test, RestoredClock_StartAfterSavePoint) {
+    expect_restored_run_matches_reference("2015-12-01 14:00:00", DAY_END, 10);
+}
+
+/** The documented resume recipe: start at the saving run's end time and restore its last output time. */
+TEST_F(Bmi_C_Formulation_Restore_Clock_Test, ExplicitTimestamp_ResumeFromLastOutput) {
+    const auto reference = reference_run();
+    const double saved_output = save_first_half().back();
+
+    // The saving run's last output row is 11:00 (end_time - output_interval).
+    auto restored = make_formulation(MIDDAY, DAY_END, restore_block(/*fatal*/ true, "2015-12-01 11:00:00"));
+    ASSERT_EQ(get_friend_var_value_as_double(*restored, "OUTPUT_VAR_2"), saved_output);
+    expect_forcing_anchored_to_start(*restored, MIDDAY);
+
+    const time_t t0 = parse_forcing_time(MIDDAY);
+    for (int i = 0; i < 12; ++i) {
+        EXPECT_DOUBLE_EQ(restored->get_response(i, DT), reference.at(t0 + i * DT))
+            << "step " << i << " (" << format_time(t0 + i * DT) << ")";
+    }
+}
+
+/** A record's timestamp is its step's output time: restoring T gives the state shown in output row T. */
+TEST_F(Bmi_C_Formulation_Restore_Clock_Test, ExplicitTimestamp_SelectsStateFromThatOutputRow) {
+    const auto responses = save_first_half(/*frequency*/ 1);
+    ASSERT_NE(responses[4], responses[5]) << "adjacent steps must differ for this check to mean anything";
+
+    // Output row 05:00 is the step at index 5; continuing from it starts at 06:00.
+    const std::string six = "2015-12-01 06:00:00";
+    auto restored = make_formulation(six, DAY_END, restore_block(/*fatal*/ true, "2015-12-01 05:00:00"));
+    EXPECT_EQ(get_friend_var_value_as_double(*restored, "OUTPUT_VAR_2"), responses[5]);
+    expect_forcing_anchored_to_start(*restored, six);
+}
+
+/** The consistency guarantee: with fatal, a formulation that has no record at the requested time stops
+ *  the run at creation instead of starting unrestored. */
+TEST_F(Bmi_C_Formulation_Restore_Clock_Test, ExplicitTimestamp_MissingRecordIsFatal) {
+    save_first_half();
+    EXPECT_THROW(make_formulation(MIDDAY, DAY_END, restore_block(/*fatal*/ true, "2015-12-01 13:00:00")),
+                 ProtocolError);
+}
+
+/** Models that restore state but keep their own clock (`test::restore_clock` = 0, set before the restore). */
+class Bmi_C_Formulation_Restore_Kept_Clock_Test : public Bmi_C_Formulation_Restore_Clock_Test {
+protected:
+    void expect_kept_clock_run_matches_reference(const std::string& start, const std::string& end, int steps) {
+        const auto reference = reference_run();
+        const double saved_output = save_first_half().back();
+
+        auto restored = make_formulation(start, end, restore_block(), "{\"test::restore_clock\": 0}");
+        auto model = get_friend_bmi_model(*restored);
+        ASSERT_EQ(get_friend_var_value_as_double(*restored, "OUTPUT_VAR_2"), saved_output)
+            << "state was not restored, so this test would not exercise a restore";
+        ASSERT_EQ(model->GetCurrentTime(), model->GetStartTime()) << "model clock should not be restored";
+        EXPECT_EQ(get_friend_bmi_model_start_time_forcing_offset_s(*restored),
+                  parse_forcing_time(start) - model_time_seconds(*restored, model->GetStartTime()));
+        expect_forcing_anchored_to_start(*restored, start);
+
+        const time_t t0 = parse_forcing_time(start);
+        for (int i = 0; i < steps; ++i) {
+            EXPECT_DOUBLE_EQ(restored->get_response(i, DT), reference.at(t0 + i * DT))
+                << "step " << i << " (" << format_time(t0 + i * DT) << ")";
+        }
+    }
+};
+
+/** Resume where the saving run stopped; the model keeps its own clock. */
+TEST_F(Bmi_C_Formulation_Restore_Kept_Clock_Test, KeptClock_StartAtSavePoint) {
+    expect_kept_clock_run_matches_reference(MIDDAY, DAY_END, 12);
+}
+
+/** Start away from the restored state's time; the model keeps its own clock. */
+TEST_F(Bmi_C_Formulation_Restore_Kept_Clock_Test, KeptClock_StartAfterSavePoint) {
+    expect_kept_clock_run_matches_reference("2015-12-01 14:00:00", DAY_END, 10);
+}
+
+/** A configured restore that finds no record leaves the clock and the forcing offset alone. */
+TEST_F(Bmi_C_Formulation_Restore_Clock_Test, NothingRestored_OffsetUnchanged) {
+    const auto reference = reference_run();
+
+    auto formulation = make_formulation(MIDDAY, DAY_END, restore_block(/*fatal*/ false));
+    auto model = get_friend_bmi_model(*formulation);
+    ASSERT_EQ(model->GetCurrentTime(), model->GetStartTime());
+    EXPECT_EQ(get_friend_bmi_model_start_time_forcing_offset_s(*formulation),
+              parse_forcing_time(MIDDAY) - model_time_seconds(*formulation, model->GetStartTime()));
+    expect_forcing_anchored_to_start(*formulation, MIDDAY);
+
+    const time_t t0 = parse_forcing_time(MIDDAY);
+    for (int i = 0; i < 12; ++i) {
+        EXPECT_DOUBLE_EQ(formulation->get_response(i, DT), reference.at(t0 + i * DT))
+            << "step " << i << " (" << format_time(t0 + i * DT) << ")";
+    }
 }
 
 #endif  // NGEN_BMI_C_LIB_TESTS_ACTIVE

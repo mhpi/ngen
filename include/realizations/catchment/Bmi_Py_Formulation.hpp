@@ -23,7 +23,7 @@ namespace realization {
 
     public:
 
-        Bmi_Py_Formulation(std::string id, std::shared_ptr<data_access::GenericDataProvider> forcing, utils::StreamHandler output_stream);
+        Bmi_Py_Formulation(std::string id, std::shared_ptr<data_access::GenericDataProvider> forcing);
 
         const std::vector<std::string> get_bmi_input_variables() const override;
 
@@ -40,8 +40,6 @@ namespace realization {
         std::shared_ptr<models::bmi::Bmi_Adapter> construct_model(const geojson::PropertyMap &properties) override;
 
         time_t convert_model_time(const double &model_time) const override;
-
-        double get_var_value_as_double(const int &index, const std::string &var_name) override;
 
         /**
          * Test whether backing model has run BMI ``Initialize``.

@@ -66,7 +66,16 @@ endif()
 add_executable(test_all)
 target_link_libraries(test_all PRIVATE gtest gtest_main)
 set_target_properties(test_all PROPERTIES FOLDER test)
-target_include_directories(test_all PRIVATE ${CMAKE_CURRENT_LIST_DIR}/bmi ${NGEN_ROOT_DIR}/include)
+# `test_all` aggregates every test target's object files, including
+# `byte_io_Test.cpp` and `wire_format_Test.cpp` which include internal
+# headers (`byte_io.hpp`, `wire_format.hpp`) from the BMI library's
+# PRIVATE include path. Same rationale as `test_bmi_protocols` below
+# — first-party tests need explicit opt-in to compile.
+target_include_directories(test_all PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/bmi
+    ${NGEN_ROOT_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src/utilities/bmi
+)
 
 # =============================================================================
 
@@ -164,6 +173,32 @@ ngen_add_test(
         NGEN_WITH_SQLITE
 )
 
+########################## Hydrofabric Unit Tests
+# The GeoJSON implementation needs no SQLite, so it is testable in a build without it -- which is
+# also the build where the factory's refusal of GeoPackage paths is the only path available.
+ngen_add_test(
+    test_hydrofabric
+    OBJECTS
+        hydrofabric/GeoJSONHydrofabricReader_Test.cpp
+    LIBRARIES
+        NGen::hydrofabric
+)
+
+########################## GeoPackage Hydrofabric Unit Tests
+ngen_add_test(
+    test_hydrofabric_geopackage
+    OBJECTS
+        hydrofabric/GeoPackageHydrofabricSchema_Test.cpp
+        hydrofabric/GeoPackageHydrofabricReader_Test.cpp
+        hydrofabric/HydrofabricReaderFactory_Test.cpp
+        hydrofabric/fixture_builders.cpp
+    LIBRARIES
+        NGen::hydrofabric
+        NGen::geopackage
+    REQUIRES
+        NGEN_WITH_SQLITE
+)
+
 ########################## Realization Config Unit Tests
 ngen_add_test(
     test_realization_config
@@ -171,6 +206,7 @@ ngen_add_test(
         realizations/Formulation_Manager_Test.cpp
         realizations/config/Output_Test.cpp
         realizations/config/CatchmentOutput_Test.cpp
+        realizations/config/Serialization_Helper_Test.cpp
     LIBRARIES
         NGen::core
         NGen::realizations_catchment
@@ -219,18 +255,85 @@ if(TARGET test_forcings_engine)
     endif()
 endif()
 
+########################## ngen_serialization Unit Tests
+
+ngen_add_test(
+    test_serialization
+    OBJECTS
+        utils/serialization/id_predicates_Test.cpp
+        utils/serialization/backend_writer_Test.cpp
+        utils/serialization/backend_reader_Test.cpp
+        utils/serialization/backend_lifetime_Test.cpp
+        utils/serialization/file_backend_Test.cpp
+        utils/serialization/parse_timestamp_Test.cpp
+    LIBRARIES
+        NGen::serialization
+        NGen::bmi_protocols
+)
+# The mocks header is shared across the four test files above. It
+# lives next to them under test/utils/serialization/; ngen_add_test
+# already adds test/utils/bmi to the include path for the BMI tests,
+# but our mocks include each other via plain `"mocks.hpp"`, which
+# resolves against the per-source directory automatically.
+target_include_directories(test_serialization PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/utils/serialization
+)
+
+# Non-POSIX-simulated FileBackend test target. Compiles file_backend.cpp
+# directly (not via the production ngen_bmi_protocols library) with
+# `-DNGEN_HAVE_POSIX_FSYNC=0`, which exercises the same code path a
+# Windows / freestanding build would take. The standalone executable
+# avoids ODR conflicts with the production library's copy of
+# file_backend.cpp (which compiles with the macro set to 1 on POSIX).
+add_executable(test_file_backend_no_fsync
+    utils/serialization/file_backend_no_fsync_Test.cpp
+    ${PROJECT_SOURCE_DIR}/src/utilities/bmi/file_backend.cpp
+)
+target_compile_definitions(test_file_backend_no_fsync PRIVATE
+    NGEN_HAVE_POSIX_FSYNC=0
+)
+target_include_directories(test_file_backend_no_fsync PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/include/utilities/bmi
+    ${PROJECT_SOURCE_DIR}/src/utilities/bmi
+)
+target_link_libraries(test_file_backend_no_fsync PRIVATE
+    NGen::serialization
+    Boost::boost
+    gtest gtest_main
+)
+set_target_properties(test_file_backend_no_fsync PROPERTIES FOLDER test)
+gtest_discover_tests(test_file_backend_no_fsync
+    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+)
+
 ########################## BMI Protocol Unit Tests
 
 ngen_add_test(
     test_bmi_protocols
     OBJECTS
         utils/bmi/mass_balance_Test.cpp
+        utils/bmi/byte_io_Test.cpp
+        utils/bmi/wire_format_Test.cpp
+        utils/bmi/serialization_record_Test.cpp
+        utils/bmi/serialization_Test.cpp
+        utils/bmi/deserialization_Test.cpp
+        utils/bmi/bmi_utilities_Test.cpp
     LIBRARIES
         NGen::bmi_protocols
         NGen::ngen_bmi
         gmock
     DEPENDS
         testbmicppmodel
+)
+# Internal-headers opt-in for the BMI protocol library. wire_format.hpp
+# and any future src/utilities/bmi/*.hpp live next to the .cpp files and
+# are intentionally NOT on NGen::bmi_protocols' PUBLIC include path. The
+# test target exercises them directly, so it opts in here. External
+# consumers of NGen::bmi_protocols do not get this path and therefore
+# cannot reach the wire primitives — that's the point.
+target_include_directories(test_bmi_protocols PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/utilities/bmi
 )
 
 ########################## Logging Unit Tests
@@ -242,6 +345,40 @@ ngen_add_test(
         NGen::logging
 
 )
+
+########################## Path-Tokens Unit Tests
+ngen_add_test(
+    test_path_tokens
+    OBJECTS
+        utils/path_tokens_Test.cpp
+    LIBRARIES
+        NGen::path_tokens
+
+)
+
+########################## Multithreading Utility Tests
+ngen_add_test(
+    test_multithreading
+    OBJECTS
+        utils/multithreading_Test.cpp
+    LIBRARIES
+        NGen::multithreading
+)
+
+# With GCC or Clang, run these tests under ThreadSanitizer. TSan cannot
+# be combined with the other sanitizers, so skip it if one of them is
+# already in use.
+if(TARGET test_multithreading
+   AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"
+   AND NOT CMAKE_CXX_FLAGS MATCHES "-fsanitize=(address|leak|memory)")
+    target_compile_options(test_multithreading PRIVATE -fsanitize=thread -g)
+    target_link_options(test_multithreading PRIVATE -fsanitize=thread)
+endif()
+
+########################## Multithreading Utility Benchmarks
+add_executable(bench_multithreading utils/multithreading_Bench.cpp)
+target_link_libraries(bench_multithreading PRIVATE NGen::multithreading)
+set_target_properties(bench_multithreading PROPERTIES FOLDER test)
 
 ########################## Nexus Tests
 ngen_add_test(
@@ -283,7 +420,7 @@ ngen_add_test(
 
 ########################## Specialized MPI Tests
 if (NGEN_WITH_MPI)
-    find_package(MPI REQUIRED)
+    find_package(MPI REQUIRED COMPONENTS CXX)
     add_executable(test_mpi_unit
             gtest_mpi_main.cpp                          # Special test main() for use with MPI
             utils/PerFormulationNexusOutputMgr_Test.cpp # Involved test files
@@ -382,6 +519,7 @@ ngen_add_test(
     OBJECTS
         bmi/Bmi_C_Adapter_Test.cpp
         realizations/catchments/Bmi_C_Formulation_Test.cpp
+        utils/bmi/c_serialization_Test.cpp
     LIBRARIES
         gmock
         NGen::core
@@ -389,11 +527,18 @@ ngen_add_test(
         NGen::core_mediator
         NGen::forcing
         NGen::ngen_bmi
+        NGen::bmi_protocols
     REQUIRES
         NGEN_WITH_BMI_C
     DEPENDS
         testbmicmodel
 )
+
+if(TARGET test_bmi_c)
+    target_include_directories(test_bmi_c PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/utilities/bmi
+    )
+endif()
 
 ########################## BMI Fortran Tests
 ngen_add_test(
@@ -401,6 +546,7 @@ ngen_add_test(
     OBJECTS
         bmi/Bmi_Fortran_Adapter_Test.cpp
         realizations/catchments/Bmi_Fortran_Formulation_Test.cpp
+        utils/bmi/fortran_serialization_Test.cpp
     LIBRARIES
         gmock
         NGen::core
@@ -408,11 +554,24 @@ ngen_add_test(
         NGen::core_mediator
         NGen::forcing
         NGen::ngen_bmi
+        NGen::bmi_protocols
     REQUIRES
         NGEN_WITH_BMI_FORTRAN
     DEPENDS
         testbmifortranmodel
 )
+
+# `fortran_serialization_Test.cpp` includes `serialization_record.hpp`,
+# which transitively pulls in the internal `wire_format.hpp`. The
+# BMI library keeps `wire_format.hpp` on its PRIVATE include path so
+# external consumers can't bypass the record layer (see comment on
+# `test_bmi_protocols` below). First-party tests like this one need
+# explicit opt-in to compile.
+if(TARGET test_bmi_fortran)
+    target_include_directories(test_bmi_fortran PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/utilities/bmi
+    )
+endif()
 
 ########################## BMI Python Tests
 ngen_add_test(
@@ -421,6 +580,7 @@ ngen_add_test(
         bmi/Bmi_Py_Adapter_Test.cpp
         realizations/catchments/Bmi_Py_Formulation_Test.cpp
         utils/python/InterpreterUtil_Test.cpp
+        utils/bmi/py_serialization_Test.cpp
     LIBRARIES
         gmock
         NGen::core
@@ -428,9 +588,20 @@ ngen_add_test(
         NGen::core_mediator
         NGen::forcing
         NGen::ngen_bmi
+        NGen::bmi_protocols
     REQUIRES
         NGEN_WITH_PYTHON
 )
+
+# Same rationale as `test_bmi_fortran` above: `py_serialization_Test.cpp`
+# includes `serialization_record.hpp` and needs the BMI library's
+# PRIVATE include path to resolve the transitively-included
+# `wire_format.hpp`.
+if(TARGET test_bmi_python)
+    target_include_directories(test_bmi_python PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/utilities/bmi
+    )
+endif()
 
 ########################## BMI Multi Tests
 ngen_add_test(
@@ -538,11 +709,38 @@ ngen_add_test(
     test_netcdf_forcing
     OBJECTS
         forcing/NetCDFPerFeatureDataProvider_Test.cpp
+        forcing/NetCDFPerFeatureDataProvider_Variants_Test.cpp
     LIBRARIES
         NGen::forcing
     REQUIRES
         NGEN_WITH_NETCDF
 )
+
+########################### Netcdf Forcing Cache Concurrency Tests
+ngen_add_test(
+    test_netcdf_forcing_cache
+    OBJECTS
+        forcing/NetCDFPerFeatureDataProvider_Cache_Test.cpp
+    LIBRARIES
+        NGen::forcing
+    REQUIRES
+        NGEN_WITH_NETCDF
+)
+
+# With GCC or Clang, run these tests under ThreadSanitizer. The provider
+# is compiled into the test itself so that both sides of each shared
+# access are instrumented; its object file then takes the place of the
+# uninstrumented one in the static forcing library. TSan
+# cannot be combined with the other sanitizers, so skip it if one of
+# them is already in use.
+if(TARGET test_netcdf_forcing_cache
+   AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"
+   AND NOT BUILD_SHARED_LIBS
+   AND NOT CMAKE_CXX_FLAGS MATCHES "-fsanitize=(address|leak|memory)")
+    target_sources(test_netcdf_forcing_cache PRIVATE ${NGEN_ROOT_DIR}/src/forcing/NetCDFPerFeatureDataProvider.cpp)
+    target_compile_options(test_netcdf_forcing_cache PRIVATE -fsanitize=thread -g)
+    target_link_options(test_netcdf_forcing_cache PRIVATE -fsanitize=thread)
+endif()
 
 ########################## Primary Combined Unit Test Target
 ngen_add_test(
@@ -555,15 +753,19 @@ ngen_add_test(
         forcing/CsvPerFeatureForcingProvider_Test.cpp
         forcing/OptionalWrappedDataProvider_Test.cpp
         forcing/NetCDFPerFeatureDataProvider_Test.cpp
+        forcing/NetCDFPerFeatureDataProvider_Variants_Test.cpp
         forcing/GridDataSelector_Test.cpp
         core/mediator/UnitsHelper_Tests.cpp
         simulation_time/Simulation_Time_Test.cpp
         core/NetworkTests.cpp
+        core/catchment/HY_CatchmentRealization_Test.cpp
+        core/HY_Features_Attributes_Test.cpp
         utils/include/StreamOutputTest.cpp
         realizations/Formulation_Manager_Test.cpp
         utils/PerFormulationNexusOutputMgr_Test.cpp
         utils/Partition_Test.cpp
         utils/logging_Test.cpp
+        utils/path_tokens_Test.cpp
     LIBRARIES
         gmock
         NGen::core
@@ -573,6 +775,7 @@ ngen_add_test(
         NGen::geojson
         NGen::realizations_catchment
         NGen::logging
+        NGen::path_tokens
         NGen::ngen_bmi
         NGen::output
         testbmicppmodel

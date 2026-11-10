@@ -10,6 +10,7 @@
 #include "bmi.h"
 #include "State_Exception.hpp"
 #include "utilities/ExternalIntegrationException.hpp"
+#include "utilities/bmi_utilities.hpp"
 
 #include <stdexcept>
 
@@ -162,14 +163,27 @@ namespace models {
              *
              * Implementation of virtual function in BMI interface.
              *
+             * The Fortran module's getter is chosen by the variable's width as well as its type name, since the
+             * latter alone does not determine the former in Fortran (@see get_primitive_type).
+             *
              * @param name
              * @param dest
              * @see get_value
              */
-            void GetValue(std::string name, void *dest) override {
-                inner_get_value(name, dest);
-            }
+            void GetValue(std::string name, void *dest) override;
 
+            /**
+             * Get the values of a variable at the given indices.
+             *
+             * The ISO C shim has no access by index, so this fetches the whole variable through @ref GetValue
+             * and copies the requested items out of it.
+             *
+             * @param name The name of the variable.
+             * @param dest Where to write the @p count items, each of the variable's item size.
+             * @param inds The indices of the items to get.
+             * @param count The number of indices in @p inds.
+             * @throw std::out_of_range If an index is outside the variable.
+             */
             void GetValueAtIndices(std::string name, void *dest, int *inds, int count) override;
 
             void GetGridShape(const int grid, int *shape) override;
@@ -202,30 +216,6 @@ namespace models {
                 throw std::runtime_error(model_name + " cannot currently get pointers for Fortran-based BMI modules.");
             }
 
-            /**
-             * Get a reference to the value(s) of a given variable.
-             *
-             * This function gets and returns the reference (i.e., pointer) to the backing model's variable with the
-             * given name.  Unlike what is returned by `GetValue()`, this will point to the current value(s) of the
-             * variable, even if the model's state has changed.
-             *
-             * Because of how C-based BMI models are implemented, raw pointers are returned.  The pointers are "owned"
-             * by the model implementation, though, so there should be no risk of memory leaks (i.e., strictly as a
-             * result of obtaining a reference via this function.)
-             *
-             * @tparam T   The type of the variable to which a reference will be returned.
-             * @param name The name of the variable to which a reference will be returned.
-             * @return A reference to the value(s) of a given variable
-             */
-            template<class T>
-            T *GetValuePtr(const std::string &name) {
-                int nbytes;
-                if (get_var_nbytes(&bmi_model->handle, name.c_str(), &nbytes) != BMI_SUCCESS)
-                    throw std::runtime_error(model_name + " failed to get pointer for BMI variable " + name + ".");
-                void *dest = GetValuePtr(name);
-                T *ptr = (T *) dest;
-                return ptr;
-            }
 
             /**
              * Get the size (in bytes) of one item of a variable.
@@ -303,36 +293,60 @@ namespace models {
             int GetGridSize(int grid_id) override;
 
             /**
-             * Get the name string for the C++ type analogous to the described type in the Fortran backing model.
+             * Resolve a Fortran type name to a primitive type, by way of the item size.
              *
-             * The supported languages for BMI modules support different types than C++ in general, but it is necessary
-             * to map "external" types to the appropriate C++ type for certain interactions; e.g., setting a variable
-             * value.  This function encapsulates the translation specific to Fortran.
+             * A Fortran type name does not fix a width.  Compiler flags such as gfortran's ``-fdefault-real-8`` and
+             * ``-fdefault-integer-8`` change what ``real`` and ``integer`` are, and a ``kind`` parameter changes it
+             * per variable, so a module may well report ``real`` for 8-byte items.  Taken at its word, that name
+             * would be addressed with a 4-byte stride.
              *
-             * Note that the size of an individual item is also required, as this can vary in certain situations
-             * depending on the implementation language of a backing model.
+             * So the name settles only whether the variable is integral or floating point, and the item size
+             * settles which type of that kind.  The C spellings modules commonly report are treated the same way.
              *
-             * @param external_type_name The string name of some Fortran type.
-             * @param item_size The particular size in bytes for items of the involved analogous types.
-             * @return The name string for the C++ type analogous to the described type in the Fortran backing model.
-             * @throw std::runtime_error If an unrecognized external type name parameter is provided.
+             * The exception is a ``double precision`` or ``double`` narrower than 8 bytes, which is not taken for a
+             * ``f32``.  gfortran's ``-freal-8-real-4`` can make one, but it is far likelier a module misreporting
+             * its type or its size, as test_bmi_fortran once did for its grid origins.  Resolved as named, to
+             * ``f64``, it is refused by the item size check with a message describing the mismatch, rather than by
+             * an accessor the module does not serve for that name.
+             *
+             * Every width with a primitive type is mapped, whether or not the ISO C shim currently has an accessor
+             * for it; which of them can actually be read or written is the business of @ref GetValue and
+             * @ref SetValue.  A 16-byte real is ``f128`` only where ``long double`` is IEEE binary128: on x86 that
+             * size is also gfortran's 80-bit ``real(kind=10)`` with padding, so the size cannot tell the two apart.
+             *
+             * A module can resolve that ambiguity itself by reporting ``long double`` for a variable of kind
+             * ``c_long_double``.  That name is resolved as named, to ``long_double``, the platform's C++ ``long
+             * double``, whatever else shares its size.
+             *
+             * Any other name, or a size with no type of the named kind, is resolved as named, for the item size
+             * check to refuse.
+             *
+             * @param external_type_name The string name of some type, as reported by the Fortran module.
+             * @param item_size The size in bytes of one item, as reported by the Fortran module.
+             * @return The primitive type, which is @p item_size bytes wide where the name has one that wide.
+             * @throw models::bmi::unknown_bmi_type If the name is not one models::bmi::parse_bmi_type knows.
              */
-            const std::string
-            get_analogous_cxx_type(const std::string &external_type_name, const size_t item_size) override {
-                if (external_type_name == "int" || external_type_name == "integer") {
-                    return "int";
+            models::bmi::primitive_type
+            get_primitive_type(std::string_view external_type_name, const size_t item_size) override {
+                using models::bmi::primitive_type;
+                const bool is_integer = external_type_name == "integer" || external_type_name == "int";
+                const bool is_single = external_type_name == "real" || external_type_name == "float";
+                const bool is_double = external_type_name == "double precision" || external_type_name == "double";
+
+                if (is_integer) {
+                    switch (item_size) {
+                        case 1: return primitive_type::i8;
+                        case 2: return primitive_type::i16;
+                        case 4: return primitive_type::i32;
+                        case 8: return primitive_type::i64;
+                    }
                 }
-                else if (external_type_name == "float" || external_type_name == "real") {
-                    return "float";
+                if (is_single || is_double) {
+                    if (is_single && item_size == 4) {return primitive_type::f32;}
+                    if (item_size == 8) {return primitive_type::f64;}
+                    if (item_size == 16 && models::bmi::long_double_is_float128) {return primitive_type::f128;}
                 }
-                else if (external_type_name == "double" || external_type_name == "double precision") {
-                    return "double";
-                }
-                else {
-                    throw std::runtime_error(
-                            "Bmi_Fortran_Adapter received unrecognized Fortran type name '" + external_type_name +
-                            "' for which the analogous C++ type could not be determined");
-                }
+                return models::bmi::parse_bmi_type(external_type_name);
             }
 
             /**
@@ -497,24 +511,13 @@ namespace models {
              *
              * The call to the BMI native ``Initialize(string)`` should pass the value stored in ``bmi_init_config``.
              */
-            inline void construct_and_init_backing_model_for_fortran() {
-                if (model_initialized)
-                    return;
-                bmi_model = std::make_unique<Bmi_Fortran_Handle_Wrapper>(Bmi_Fortran_Handle_Wrapper());
-                dynamic_library_load();
-                execModuleRegistration();
-                int init_result = initialize(&bmi_model->handle, bmi_init_config.c_str());
-                if (init_result != BMI_SUCCESS) {
-                    init_exception_msg = "Failure when attempting to initialize " + model_name;
-                    throw models::external::State_Exception(init_exception_msg);
-                }
-            }
+            void construct_and_init_backing_model_for_fortran();
 
             /**
              * Internal implementation of logic used for @see GetInputItemCount.
              *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
+             * "Inner" functions such as this should not contain nested function calls to any non-inner member functions
+             * for the type.
              *
              * @return The count of input BMI variables.
              * @see GetInputItemCount
@@ -530,8 +533,8 @@ namespace models {
             /**
              * Internal implementation of logic used for @see GetOutputItemCount.
              *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
+             * "Inner" functions such as this should not contain nested function calls to any non-inner member functions
+             * for the type.
              *
              * @return The count of output BMI variables.
              * @see GetOutputItemCount
@@ -553,54 +556,20 @@ namespace models {
             }
 
             /**
-             * Internal implementation of logic used for @see GetValue.
-             *
-             * The Fortran implementation has separate getters/setters for different variable types, which is mirrored
-             * in the corresponding inner implementations here.
-             *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
-             *
-             * Essentially, function exists as inner implementation.  This allows it to be inlined, which may lead to
-             * optimization in certain situations.
-             *
-             * @param name The name of the variable for which to get values.
-             * @param dest A float pointer in which to return the values.
-             */
-            inline void inner_get_value(const std::string& name, void *dest) {
-                std::string varType = inner_get_var_type(name);
-                //Can use the C type or the fortran type, e.g. int or integer
-                if (varType == "int" || varType == "integer") {
-                    inner_get_value_int(name, (int *)dest);
-                }
-                else if (varType == "float" || varType == "real") {
-                    inner_get_value_float(name, (float *)dest);
-                }
-                else if (varType == "double" || varType == "double precision") {
-                    inner_get_value_double(name, (double *)dest);
-                }
-                else {
-                    throw ::external::ExternalIntegrationException(
-                            "Can't get model " + model_name + " variable " + name + " of type '" + varType + ".");
-                }
-            }
-
-            /**
              * Internal implementation of logic used for @see GetValue for ints.
              *
              * The Fortran implementation has separate getters/setters for different variable types, which is mirrored
-             * in the corresponding inner implementations here.
+             * in the corresponding inner implementations here, as overloads on the pointer type.  @see GetValue
+             * calls whichever overload takes the variable's resolved type, so supporting a further width from the
+             * ISO C shim needs only a further overload.
              *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
-             *
-             * Essentially, function exists as inner implementation.  This allows it to be inlined, which may lead to
-             * optimization in certain situations.
+             * "Inner" functions such as this should not contain nested function calls to any non-inner member functions
+             * for the type.
              *
              * @param name The name of the variable for which to get values.
              * @param dest An int pointer in which to return the values.
              */
-            inline void inner_get_value_int(const std::string& name, int *dest) {
+            inline void inner_get_value(const std::string& name, int *dest) {
                 if (get_value_int(&bmi_model->handle, name.c_str(), dest) != BMI_SUCCESS) {
                     throw std::runtime_error(model_name + " failed to get values for variable " + name + ".");
                 }
@@ -610,18 +579,17 @@ namespace models {
              * Internal implementation of logic used for @see GetValue for floats.
              *
              * The Fortran implementation has separate getters/setters for different variable types, which is mirrored
-             * in the corresponding inner implementations here.
+             * in the corresponding inner implementations here, as overloads on the pointer type.  @see GetValue
+             * calls whichever overload takes the variable's resolved type, so supporting a further width from the
+             * ISO C shim needs only a further overload.
              *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
-             *
-             * Essentially, function exists as inner implementation.  This allows it to be inlined, which may lead to
-             * optimization in certain situations.
+             * "Inner" functions such as this should not contain nested function calls to any non-inner member functions
+             * for the type.
              *
              * @param name The name of the variable for which to get values.
              * @param dest A float pointer in which to return the values.
              */
-            inline void inner_get_value_float(const std::string& name, float *dest) {
+            inline void inner_get_value(const std::string& name, float *dest) {
                 if (get_value_float(&bmi_model->handle, name.c_str(), dest) != BMI_SUCCESS) {
                     throw std::runtime_error(model_name + " failed to get values for variable " + name + ".");
                 }
@@ -631,18 +599,17 @@ namespace models {
              * Internal implementation of logic used for @see GetValue for doubles.
              *
              * The Fortran implementation has separate getters/setters for different variable types, which is mirrored
-             * in the corresponding inner implementations here.
+             * in the corresponding inner implementations here, as overloads on the pointer type.  @see GetValue
+             * calls whichever overload takes the variable's resolved type, so supporting a further width from the
+             * ISO C shim needs only a further overload.
              *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
-             *
-             * Essentially, function exists as inner implementation.  This allows it to be inlined, which may lead to
-             * optimization in certain situations.
+             * "Inner" functions such as this should not contain nested function calls to any non-inner member functions
+             * for the type.
              *
              * @param name The name of the variable for which to get values.
              * @param dest A double pointer in which to return the values.
              */
-            inline void inner_get_value_double(const std::string& name, double *dest) {
+            inline void inner_get_value(const std::string& name, double *dest) {
                 if (get_value_double(&bmi_model->handle, name.c_str(), dest) != BMI_SUCCESS) {
                     throw std::runtime_error(model_name + " failed to get values for variable " + name + ".");
                 }
@@ -651,8 +618,8 @@ namespace models {
             /**
              * Build a vector of the input or output variable names string, and return a pointer to it.
              *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
+             * "Inner" functions such as this should not contain nested function calls to any non-inner member functions
+             * for the type.
              *
              * This should be used for @see GetInputVarNames and @see GetOutputVarNames.
              *
@@ -708,54 +675,20 @@ namespace models {
             }
 
             /**
-             * Internal implementation of logic used for @see SetValue.
-             *
-             * The Fortran implementation has separate getters/setters for different variable types, which is mirrored
-             * in the corresponding inner implementations here.
-             *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
-             *
-             * Essentially, function exists as inner implementation.  This allows it to be inlined, which may lead to
-             * optimization in certain situations.
-             *
-             * @param name The name of the variable for which to get values.
-             * @param dest A pointer that should be passed to the analogous BMI setter of the Fortran module.
-             */
-            inline void inner_set_value(const std::string& name, void *src) {
-                std::string varType = inner_get_var_type(name);
-                //Can use the C type or the fortran type, e.g. int or integer
-                if (varType == "int" || varType == "integer") {
-                    inner_set_value_int(name, (int *)src);
-                }
-                else if (varType == "float" || varType == "real") {
-                    inner_set_value_float(name, (float *)src);
-                }
-                else if (varType == "double" || varType == "double precision") {
-                    inner_set_value_double(name, (double *)src);
-                }
-                else {
-                    throw ::external::ExternalIntegrationException(
-                            "Can't get model " + model_name + " variable " + name + " of type '" + varType + ".");
-                }
-            }
-
-            /**
              * Internal implementation of logic used for @see SetValue for ints.
              *
              * The Fortran implementation has separate getters/setters for different variable types, which is mirrored
-             * in the corresponding inner implementations here.
+             * in the corresponding inner implementations here, as overloads on the pointer type.  @see SetValue
+             * calls whichever overload takes the variable's resolved type, so supporting a further width from the
+             * ISO C shim needs only a further overload.
              *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
-             *
-             * Essentially, function exists as inner implementation.  This allows it to be inlined, which may lead to
-             * optimization in certain situations.
+             * "Inner" functions such as this should not contain nested function calls to any non-inner member functions
+             * for the type.
              *
              * @param name The name of the variable for which to get values.
-             * @param dest An int pointer that should be passed to the analogous BMI setter of the Fortran module.
+             * @param src An int pointer that should be passed to the analogous BMI setter of the Fortran module.
              */
-            inline void inner_set_value_int(const std::string& name, int *src) {
+            inline void inner_set_value(const std::string& name, int *src) {
                 if (set_value_int(&bmi_model->handle, name.c_str(), src) != BMI_SUCCESS) {
                     throw models::external::State_Exception("Failed to set values of " + name + " int variable for " + model_name);
                 }
@@ -765,18 +698,17 @@ namespace models {
              * Internal implementation of logic used for @see SetValue for floats.
              *
              * The Fortran implementation has separate getters/setters for different variable types, which is mirrored
-             * in the corresponding inner implementations here.
+             * in the corresponding inner implementations here, as overloads on the pointer type.  @see SetValue
+             * calls whichever overload takes the variable's resolved type, so supporting a further width from the
+             * ISO C shim needs only a further overload.
              *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
-             *
-             * Essentially, function exists as inner implementation.  This allows it to be inlined, which may lead to
-             * optimization in certain situations.
+             * "Inner" functions such as this should not contain nested function calls to any non-inner member functions
+             * for the type.
              *
              * @param name The name of the variable for which to get values.
-             * @param dest A float pointer that should be passed to the analogous BMI setter of the Fortran module.
+             * @param src A float pointer that should be passed to the analogous BMI setter of the Fortran module.
              */
-            inline void inner_set_value_float(const std::string& name, float *src) {
+            inline void inner_set_value(const std::string& name, float *src) {
                 if (set_value_float(&bmi_model->handle, name.c_str(), src) != BMI_SUCCESS) {
                     throw models::external::State_Exception("Failed to set values of " + name + " float variable for " + model_name);
                 }
@@ -786,22 +718,45 @@ namespace models {
              * Internal implementation of logic used for @see SetValue for doubles.
              *
              * The Fortran implementation has separate getters/setters for different variable types, which is mirrored
-             * in the corresponding inner implementations here.
+             * in the corresponding inner implementations here, as overloads on the pointer type.  @see SetValue
+             * calls whichever overload takes the variable's resolved type, so supporting a further width from the
+             * ISO C shim needs only a further overload.
              *
-             * "Inner" functions such as this should not contain nested function calls to any other member functions for
-             * the type.
-             *
-             * Essentially, function exists as inner implementation.  This allows it to be inlined, which may lead to
-             * optimization in certain situations.
+             * "Inner" functions such as this should not contain nested function calls to any non-inner member functions
+             * for the type.
              *
              * @param name The name of the variable for which to get values.
-             * @param dest A double pointer that should be passed to the analogous BMI setter of the Fortran module.
+             * @param src A double pointer that should be passed to the analogous BMI setter of the Fortran module.
              */
-            inline void inner_set_value_double(const std::string& name, double *src) {
+            inline void inner_set_value(const std::string& name, double *src) {
                 if (set_value_double(&bmi_model->handle, name.c_str(), src) != BMI_SUCCESS) {
                     throw models::external::State_Exception("Failed to set values of " + name + " double variable for " + model_name);
                 }
             }
+
+            /**
+             * Get the primitive type of a variable's values, checked against the item size the module reports.
+             *
+             * @param name The name of the variable.
+             * @return The variable's primitive type, which is as wide as its items.
+             * @throw ::external::ExternalIntegrationException If no C++ type corresponds to the variable's type name.
+             * @throw std::runtime_error If the resolved type is not as wide as the module says the items are.
+             * @see models::bmi::resolve_var_type
+             */
+            models::bmi::primitive_type get_value_primitive_type(std::string_view name);
+
+            /**
+             * Get a variable's values into @p dest, as items of @tparam T, through the ISO C shim's getter for T.
+             *
+             * The variable's type has to be resolved already, to @p type, of which T is the C++ type.
+             *
+             * @param name The name of the variable.
+             * @param dest Where to write the variable's values.
+             * @param type The variable's primitive type, for the message if the shim has no getter for it.
+             * @throw ::external::ExternalIntegrationException If the ISO C shim has no getter for T.
+             */
+            template <typename T>
+            void get_value_as(const std::string &name, T *dest, models::bmi::primitive_type type);
 
             friend class ::Bmi_Fortran_Adapter_Test;
 
