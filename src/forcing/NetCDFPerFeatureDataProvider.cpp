@@ -2,6 +2,7 @@
 
 #if NGEN_WITH_NETCDF
 #include "NetCDFPerFeatureDataProvider.hpp"
+#include "utilities/logging_utils.h"
 #include "utilities/multithreading.hpp"
 #include <mediator/UnitsHelper.hpp>
 
@@ -185,14 +186,14 @@ struct NetCDFPerFeatureDataProvider::VariableInfo
     }
 };
 
-std::shared_ptr<NetCDFPerFeatureDataProvider> NetCDFPerFeatureDataProvider::get_shared_provider(std::string input_path, time_t sim_start, time_t sim_end, utils::StreamHandler log_s)
+std::shared_ptr<NetCDFPerFeatureDataProvider> NetCDFPerFeatureDataProvider::get_shared_provider(std::string input_path, time_t sim_start, time_t sim_end)
 {
     const std::lock_guard<std::mutex> lock(shared_providers_mutex);
     std::shared_ptr<NetCDFPerFeatureDataProvider> p;
     if(shared_providers.count(input_path) > 0){
         p = shared_providers[input_path];
     } else {
-        p = std::make_shared<data_access::NetCDFPerFeatureDataProvider>(input_path, sim_start, sim_end, log_s);
+        p = std::make_shared<data_access::NetCDFPerFeatureDataProvider>(input_path, sim_start, sim_end);
         shared_providers[input_path] = p;
     }
     return p;
@@ -344,7 +345,7 @@ NetCDFPerFeatureDataProvider::TimeInfo NetCDFPerFeatureDataProvider::get_time_me
                                  + " variable's units '" + units_att_str + "' aren't a recognized time unit");
     }
     else {
-        log_stream << "Warning using default time units\n";
+        logging::warning("Using default time units\n");
     }
     assert(info.scale_factor != 0); // This should not happen.
 
@@ -356,7 +357,7 @@ NetCDFPerFeatureDataProvider::TimeInfo NetCDFPerFeatureDataProvider::get_time_me
 
             if ( epoch_att.isNull() )
             {
-                log_stream << "Warning using default epoch string\n";
+                logging::warning("Using default epoch string\n");
             }
             else
             {
@@ -365,7 +366,7 @@ NetCDFPerFeatureDataProvider::TimeInfo NetCDFPerFeatureDataProvider::get_time_me
         }
         catch(const netCDF::exceptions::NcException& e) {
             std::cerr<<e.what()<<std::endl;
-            log_stream << "Warning using default epoch string\n";
+            logging::warning("Using default epoch string\n");
         }
     }
 
@@ -377,9 +378,8 @@ NetCDFPerFeatureDataProvider::TimeInfo NetCDFPerFeatureDataProvider::get_time_me
     return info;
 }
 
-NetCDFPerFeatureDataProvider::NetCDFPerFeatureDataProvider(std::string input_path, time_t sim_start, time_t sim_end, utils::StreamHandler log_s)
-    : log_stream(log_s)
-    , file_path(input_path)
+NetCDFPerFeatureDataProvider::NetCDFPerFeatureDataProvider(std::string input_path, time_t sim_start, time_t sim_end)
+    : file_path(input_path)
     , sim_start_date_time_epoch(sim_start)
     , sim_end_date_time_epoch(sim_end)
 {
@@ -608,7 +608,7 @@ void NetCDFPerFeatureDataProvider::read_times()
     for (size_t i = 1; i < time_vals.size(); ++i) {
         double interval = time_vals[i] - time_vals[i-1];
         if (!std::isfinite(interval) || std::abs(interval - time_stride) > 1e-6) {
-            log_stream << "Error: Time intervals are not constant in forcing file\n";
+            logging::error("Time intervals are not constant in forcing file\n");
             throw std::runtime_error("Time intervals in forcing file '" + file_path + "' are not constant: "
                                      + std::to_string(interval) + " seconds at step " + std::to_string(i)
                                      + ", rather than " + std::to_string(time_stride));
@@ -713,7 +713,7 @@ void NetCDFPerFeatureDataProvider::finalize()
     nc_file = nullptr;
 }
 
-boost::span<const std::string> NetCDFPerFeatureDataProvider::get_available_variable_names() const
+std::span<const std::string> NetCDFPerFeatureDataProvider::get_available_variable_names() const
 {
     return variable_names;
 }

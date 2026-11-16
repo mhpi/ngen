@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <chrono>
 
-#include <boost/core/span.hpp>
+#include <span>
 
 #include "realizations/catchment/Formulation_Manager.hpp"
 #include <Formulation.hpp>
@@ -17,7 +17,6 @@
 
 #include <FileChecker.h>
 #include <boost/algorithm/string.hpp>
-#include <boost/range/algorithm/sort.hpp>
 
 #include <NgenSimulation.hpp>
 
@@ -600,7 +599,7 @@ int main(int argc, char* argv[]) {
     // now create the layer objects
 
     // first make sure that the layer are listed in decreasing order
-    boost::range::sort(keys, std::greater<int>());
+    std::ranges::sort(keys, std::greater<int>());
 
     std::vector<std::shared_ptr<ngen::Layer>> layers;
     layers.resize(keys.size());
